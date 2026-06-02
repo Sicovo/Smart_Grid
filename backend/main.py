@@ -1,12 +1,14 @@
 import json
 import os
+import socket
 import threading
-import requests
-from fastapi import FastAPI
+from urllib.parse import urlparse
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc
 from db import (SessionLocal, GridSnapshot, ModuleSnapshot,
                 init_db, save_module_snapshot)
+from datetime import datetime
 
 app = FastAPI()
 
@@ -17,6 +19,7 @@ MODULE_CMD_TARGETS = {
     "cap": os.getenv("PICO_CAP_URL", "http://192.168.137.23"),
     "led": os.getenv("PICO_LED_URL", "http://192.168.137.24"),
     "export": os.getenv("PICO_EXPORT_URL", "http://192.168.137.25"),
+    "lux": os.getenv("PICO_LUX_URL", "http://192.168.137.26"),
 }
 MODULE_CMD_ROLES = tuple(MODULE_CMD_TARGETS.keys())
 
@@ -59,21 +62,50 @@ def _post_module_cmd(role, payload):
             "reason": f"No host configured for role {role}",
         }
 
-    url = host.rstrip("/") + "/cmd"
+    parsed = urlparse(host)
+    hostname = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path.rstrip("/") + "/cmd"
+    body = json.dumps(payload)
+    req = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {hostname}\r\n"
+        "Content-Type: text/plain;charset=UTF-8\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        f"{body}"
+    ).encode("utf-8")
+
     try:
-        resp = requests.post(url, json=payload, timeout=MODULE_CMD_TIMEOUT)
+        with socket.create_connection((hostname, port), timeout=MODULE_CMD_TIMEOUT) as sock:
+            sock.sendall(req)
+            resp = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+
+        resp_text = resp.decode(errors="replace")
+        status_line = resp_text.splitlines()[0] if resp_text else ""
+        parts = status_line.split(" ")
+        status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+        body_start = resp_text.find("\r\n\r\n")
+        response_body = resp_text[body_start + 4 :] if body_start >= 0 else ""
+
         return {
-            "ok": resp.ok,
-            "status": resp.status_code,
-            "url": url,
+            "ok": 200 <= status_code < 300,
+            "status": status_code,
+            "url": host.rstrip("/") + "/cmd",
             "payload": payload,
-            "response": resp.text[:200],
+            "response": response_body[:200],
         }
-    except requests.RequestException as exc:
+    except OSError as exc:
         return {
             "ok": False,
             "status": "error",
-            "url": url,
+            "url": host.rstrip("/") + "/cmd",
             "payload": payload,
             "reason": str(exc),
         }
@@ -85,17 +117,86 @@ def get_module_hosts():
         "hosts": {role: MODULE_CMD_TARGETS.get(role, "") for role in MODULE_CMD_ROLES}
     }
 
+@app.post("/modules/cmd/{role}")
+def send_module_cmd(role: str, payload: dict):
+    """Proxy a browser command through FastAPI to the module HTTP /cmd endpoint.
+
+    This avoids browser CORS/preflight problems because the browser only calls
+    FastAPI, while FastAPI talks to the Pico/ESP32 directly from the server side.
+    """
+    if role not in MODULE_CMD_TARGETS:
+        raise HTTPException(status_code=404, detail=f"Unknown module role: {role}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Command payload must be a JSON object")
+
+    result = _post_module_cmd(role, payload)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result)
+    return result
+
+@app.post("/modules/tlm/{role}")
+def receive_module_tlm(role: str, payload: dict):
+    """Receive pushed telemetry from a firmware module and persist it."""
+    if role not in MODULE_CMD_TARGETS:
+        raise HTTPException(status_code=404, detail=f"Unknown module role: {role}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Telemetry payload must be a JSON object")
+
+    if payload.get("role") != role:
+        payload["role"] = role
+
+    try:
+        if not save_module_snapshot(payload):
+            raise RuntimeError("Snapshot save skipped or duplicate")
+        print(f"[tlm push] {role}: saved snapshot")
+    except Exception as exc:
+        print(f"[tlm push] {role}: error - {exc}")
+        raise HTTPException(status_code=500, detail={"ok": False, "reason": str(exc)})
+
+    return {"ok": True, "role": role}
+
+@app.get("/modules/status")
+def get_module_status():
+    timeout_s = 6.0
+    now = datetime.utcnow()
+
+    db = SessionLocal()
+
+    result = {}
+    for role in ["pv", "grid", "export", "cap", "led", "lux"]:
+        row = (
+            db.query(ModuleSnapshot)
+            .filter(ModuleSnapshot.role == role)
+            .order_by(desc(ModuleSnapshot.id))
+            .first()
+        )
+
+        if row is None:
+            result[role] = {
+                "online": False,
+                "last_seen": None,
+                "age_s": None,
+            }
+        else:
+            age_s = (now - row.timestamp).total_seconds()
+            result[role] = {
+                "online": age_s <= timeout_s,
+                "last_seen": row.timestamp.isoformat(),
+                "age_s": round(age_s, 2),
+            }
+
+    db.close()
+    return result
+
 
 @app.post("/algo/module-hosts")
 def set_module_hosts(payload: dict):
     updates = payload.get("hosts", payload) if isinstance(payload, dict) else {}
     if not isinstance(updates, dict):
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="hosts must be an object")
 
     unknown = [k for k in updates.keys() if k not in MODULE_CMD_TARGETS]
     if unknown:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail=f"Unknown roles: {', '.join(unknown)}")
 
     for role, host in updates.items():
@@ -475,7 +576,6 @@ def apply_naive_recommendation():
 
         recommendation = _run_naive_from_db(grid_row, module_rows)
         if "error" in recommendation:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail=recommendation["error"])
 
         suggested = recommendation.get("suggested", {})

@@ -184,3 +184,4 @@ def save_module_snapshot(payload):
     db.add(snap)
     db.commit()
     db.close()
+    return True

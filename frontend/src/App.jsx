@@ -161,7 +161,7 @@ function App() {
           <div className="dashboard-container" style={{ maxWidth: "100%" }}>
             <h1 className="page-title">SMPS Modules</h1>
             <p className="date-subtitle">
-              Live telemetry from backend DB. Commands are sent directly to each module&apos;s HTTP server.
+              Live telemetry from backend DB. Commands are proxyed through the backend API.
             </p>
             <SmpsModules apiBase={API_BASE} />
           </div>
