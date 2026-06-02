@@ -149,7 +149,6 @@ def wifi_connect(hostname, timeout_ms=15000):
 # we don't want to add a dependency for one. ~50 lines.
 #
 # Endpoints:
-#   GET  /tlm   → returns state["tlm"] as JSON
 #   POST /cmd   → JSON body merged into state["cmd"]; bumps last_cmd_ms
 #
 # Threading rules:
@@ -180,6 +179,43 @@ def _sendall(sock, data):
         sent += n
 
 
+BACKEND_PUSH_HOST = "192.168.137.1"
+BACKEND_PUSH_PORT = 8000
+BACKEND_PUSH_PATH = "/modules/tlm/cap"
+BACKEND_PUSH_INTERVAL_MS = 1000
+BACKEND_PUSH_TIMEOUT_MS = 800
+
+
+def _push_tlm(state):
+    tlm = state.get('tlm')
+    if not isinstance(tlm, dict) or not tlm:
+        return
+
+    # Ensure the backend receives the module role explicitly.
+    if tlm.get('role') != 'cap':
+        tlm = dict(tlm)
+        tlm['role'] = 'cap'
+
+    body = json.dumps(tlm).encode('utf-8')
+    req = (b'POST ' + BACKEND_PUSH_PATH.encode('utf-8') + b' HTTP/1.1\r\n'
+           b'Host: ' + BACKEND_PUSH_HOST.encode('utf-8') + b'\r\n'
+           b'Content-Type: application/json\r\n'
+           b'Content-Length: ' + str(len(body)).encode('utf-8') + b'\r\n'
+           b'Connection: close\r\n\r\n' + body)
+
+    try:
+        addr_info = socket.getaddrinfo(BACKEND_PUSH_HOST, BACKEND_PUSH_PORT)[0][-1]
+        s = socket.socket()
+        s.settimeout(BACKEND_PUSH_TIMEOUT_MS / 1000.0)
+        s.connect(addr_info)
+        _sendall(s, req)
+        resp = s.recv(1024)
+        s.close()
+        print('[cap push] sent to', BACKEND_PUSH_HOST)
+    except Exception as e:
+        print('[cap push] error:', e)
+
+
 def _serve_dashboard_html(sock):
     # Stream file in chunks; avoids RAM spikes and truncated socket writes.
     for p in ('dashboard.html', '/dashboard.html', 'index.html', '/index.html'):
@@ -205,7 +241,17 @@ def _http_server(state, port):
     s.listen(2)
     s.settimeout(0.5)   # accept() returns every 500 ms so we can re-check state['shutdown']
     gc_count = 0
+    last_push_ms = time.ticks_ms()
     while not state.get('shutdown', False):
+        # Check if it's time to push telemetry
+        now_ms = time.ticks_ms()
+        if time.ticks_diff(now_ms, last_push_ms) >= BACKEND_PUSH_INTERVAL_MS:
+            try:
+                _push_tlm(state)
+            except Exception:
+                pass
+            last_push_ms = now_ms
+        
         cl = None
         try:
             cl, _addr = s.accept()
@@ -231,11 +277,6 @@ def _http_server(state, port):
                     _sendall(cl, b'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n' + CORS +
                              b'Content-Length: ' + str(len(body)).encode() +
                              b'\r\nConnection: close\r\n\r\n' + body)
-            elif method == b'GET' and path == b'/tlm':
-                body = json.dumps(state['tlm']).encode()
-                _sendall(cl, b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n' + CORS +
-                         b'Content-Length: ' + str(len(body)).encode() +
-                         b'\r\nConnection: close\r\n\r\n' + body)
             elif method == b'POST' and path == b'/cmd':
                 idx = req.find(b'\r\n\r\n')
                 body = req[idx + 4:] if idx >= 0 else b''

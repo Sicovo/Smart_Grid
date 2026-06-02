@@ -185,7 +185,6 @@ state = {
 
 _i_err_int   = 0.0
 _pwm_out     = PWM_MIN
-_print_cnt   = 0
 _tlm_cnt     = 0
 _last_e_ms   = time.ticks_ms()   # for measured-dt energy integration
 _trip_active = 0
@@ -651,13 +650,6 @@ try:
                 # BOOST: no inversion.
                 pwm.duty_u16(int(_pwm_out))
 
-            _print_cnt += 1
-            if _print_cnt >= 500:
-                _print_cnt = 0
-                print('[cap] Vcap={:.2f} Vbus={:.2f} iL={:+.3f} P={:+.2f}W '
-                      'P_3s={:+.2f}W i_cmd={:+.3f}/{:+.3f} soc={:.0f}% pwm={}'
-                      .format(_va_lp, _vb_lp, _il_lp, _p_lp, _p_avg3s,
-                              i_cmd_raw, i_cmd_eff, soc_pct(_va_lp), int(_pwm_out)))
         else:
             # No tick pending: idle this core until the next timer interrupt so
             # the busy-spin does not starve the core-1 WiFi/HTTP thread.
