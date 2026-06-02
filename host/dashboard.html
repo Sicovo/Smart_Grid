@@ -198,7 +198,6 @@
   <span><label>Grid</label><input id="host-grid"   value="grid.local"></span>
   <span><label>Export</label><input id="host-export" value="export.local"></span>
   <span><label>Cap</label><input id="host-cap"    value="cap.local"></span>
-  <span><label>Lux</label><input id="host-lux"    value="lux.local"></span>
   <span><label>LED</label><input id="host-led"    value="led.local"></span>
   <button onclick="saveHosts()" style="margin-left:auto">Save</button>
 </div>
@@ -232,7 +231,7 @@
 <div class="grid" id="modules"></div>
 
 <script>
-const MODULES = ['pv', 'grid', 'export', 'cap', 'lux', 'led'];
+const MODULES = ['pv', 'grid', 'export', 'cap', 'led'];
 const GAUGE_LO = 8.0, GAUGE_HI = 12.0;
 const GRID_TARGET_DEFAULT = 9.5, EXPORT_TARGET_DEFAULT = 10.5;
 const ALGORITHM_CONTROL_MODULES = ['pv', 'grid', 'export', 'cap', 'led'];
@@ -255,7 +254,7 @@ const HISTORY = { t: [] };
 TRACES.forEach(tr => HISTORY[tr.key] = []);
 const TRACE_VISIBLE = Object.fromEntries(TRACES.map(t => [t.key, true]));
 
-const MOD_HISTORY = { pv: [], grid: [], export: [], cap: [], lux: [], led: [] };
+const MOD_HISTORY = { pv: [], grid: [], export: [], cap: [], led: [] };
 
 const PER_MODULE_TRACES = {
   pv: [
@@ -278,9 +277,6 @@ const PER_MODULE_TRACES = {
     { key: 'v_cap',  label: 'Vcap', axis: 'V', color: '#5ec9c0' },
     { key: 'vb_bus', label: 'Vbus', axis: 'V', color: '#e6e6e6' },
     { key: 'iL',     label: 'iL',   axis: 'A', color: '#5ec9c0' },
-  ],
-  lux: [
-    { key: 'v_ldr', label: 'V_ldr', axis: 'V', color: '#f5c84b' },
   ],
   led: [
     { key: 'i_red', label: 'R', axis: 'AL', color: '#e07070' },
@@ -395,7 +391,6 @@ function moduleFromTlm(data) {
   if (!data || typeof data !== 'object') return null;
   if (typeof data.role === 'string' && MODULES.includes(data.role)) return data.role;
   if ('i_red' in data || 'i_yel' in data || 'i_grn' in data) return 'led';
-  if ('v_ldr' in data || 'calibrated' in data) return 'lux';
   if ('v_cap' in data || 'energy_J' in data || 'soc_pct' in data) return 'cap';
   if ('v_panel' in data || 'vmpp_target' in data) return 'pv';
   if ('v_psu' in data) return 'grid';
@@ -634,30 +629,6 @@ function statsExport(d) {
   ].join('');
 }
 
-function statsLux(d) {
-  const calibrated = (d.calibrated === true);
-  const irrPct = (typeof d.irradiance === 'number') ? d.irradiance * 100 : null;
-
-  // Full-width yellow banner that takes the place of stats when uncalibrated.
-  const calBanner = (!calibrated)
-    ? `<div class="stat" style="grid-column:1/-1; border-top-color:var(--warn); background:rgba(217,168,90,0.10)">
-         <div class="stat-label" style="color:var(--warn)">UNCALIBRATED</div>
-         <div class="stat-value" style="font-size:13px; color:var(--warn); white-space:normal; line-height:1.4">
-           Turn lamp <b>OFF</b> &rarr; click <b>Set 0%</b>.<br>
-           Then turn lamp <b>FULL</b> &rarr; click <b>Set 100%</b>.
-         </div>
-       </div>`
-    : '';
-
-  // Show the live raw voltage even when uncalibrated so the user can confirm
-  // wiring + light direction before pressing Set 0%.
-  return calBanner + [
-    statCard('LDR voltage',  d.v_ldr,  'V', 'sun', 3),
-    statCard('Irradiance',   irrPct,   '%', 'sun', 1),
-    statCard('V_dark (cal)', d.v_dark, 'V', null,  3),
-    statCard('V_full (cal)', d.v_full, 'V', null,  3),
-  ].join('');
-}
 
 function statsCap(d) {
   // Direction badge — what the cap is actually doing right now.
@@ -739,12 +710,6 @@ function setStatus(name, data) {
   }
   el.classList.remove('offline');
   el.classList.toggle('tripped', !!data.trip);
-  // Lux is a sensor module — no trip/enable/wd. Status reflects calibration state.
-  if (name === 'lux') {
-    if (data.calibrated) { st.textContent = 'CALIBRATED'; st.className = 'pill ok status'; }
-    else                 { st.textContent = 'UNCAL';      st.className = 'pill warn status'; }
-    return;
-  }
   if (data.trip)         { st.textContent = 'TRIP';     st.className = 'pill err status'; }
   else if (data.wd)      { st.textContent = 'WATCHDOG'; st.className = 'pill warn status'; }
   else if (!data.enable) { st.textContent = 'disabled'; st.className = 'pill warn status'; }
@@ -803,7 +768,6 @@ function renderModule(name, data) {
     case 'grid':   html = `<div class="stats">${statsGrid(d)}</div>`; break;
     case 'export': html = `<div class="stats">${statsExport(d)}</div>`; break;
     case 'cap':    html = `<div class="stats">${statsCap(d)}</div>`; break;
-    case 'lux':    html = `<div class="stats">${statsLux(d)}</div>`; break;
     case 'led':    html = statsLED(d); break;
   }
   html += `<div class="stat-sub" style="margin-top:8px">net ${netModeTxt} · wifi ${wifiTxt} · backend ${postTxt}</div>`;
@@ -876,7 +840,26 @@ function build() {
         <button onclick="send('pv',{enable:1})">Enable</button>
         <button class="danger" onclick="send('pv',{enable:0})">Disable</button>
         <button class="warn" onclick="send('pv',{reset_trip:1})">⚠ Reset Trip</button>
-      </div>`,
+      </div>
+      <div class="row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;align-items:baseline">
+        <label style="font-weight:600;letter-spacing:0.5px">MPPT TEST</label>
+        <span style="color:var(--dim);font-size:10px;flex:1">fixed → LUT → P&amp;O at 25 / 50 / 75 / 100% irradiance</span>
+      </div>
+      <div class="row">
+        <label>Fixed Vmpp</label>
+        <input type="number" id="pv-test-fixed-vmpp" step="0.05" min="5.0" max="7.0" value="5.15" style="width:80px">
+        <span style="color:var(--dim);font-size:10px">V (constant for the fixed step)</span>
+      </div>
+      <div class="quickbar">
+        <button id="pv-test-start" onclick="startMpptTest()">▶ Start MPPT test</button>
+        <button id="pv-test-next" onclick="nextMpptTest()" disabled>⏭ Next irradiance</button>
+        <button id="pv-test-abort" class="danger" onclick="abortMpptTest()" disabled>■ Abort</button>
+        <button id="pv-test-csv" onclick="downloadMpptCsv()" disabled>⇣ Download CSV</button>
+      </div>
+      <div id="pv-test-status" style="font-size:11px;color:var(--dim);line-height:1.7;padding:8px 2px 2px 2px">
+        <i>Idle. Press Start MPPT test to begin.</i>
+      </div>
+      <div id="pv-test-results" style="font-size:11px;color:var(--dim);line-height:1.5;padding:4px 2px 2px 2px"></div>`,
       `<span id="mod-pv-mode-pill" class="pill" style="display:none"></span>`) +
     moduleShell('grid', 'Grid — buck, CV import', `
       <div class="row">
@@ -963,21 +946,6 @@ function build() {
       </div>
       <div id="cap-test-status" style="font-size:11px;color:var(--dim);line-height:1.7;padding:8px 2px 2px 2px"></div>
       `) +
-    moduleShell('lux', 'Lux — irradiance sensor', `
-      <div class="row">
-        <label>Step 1</label>
-        <button style="flex:1" onclick="send('lux',{calibrate:'dark'})">Set 0% (lamp OFF)</button>
-      </div>
-      <div class="row">
-        <label>Step 2</label>
-        <button style="flex:1" onclick="send('lux',{calibrate:'full'})">Set 100% (lamp FULL bright)</button>
-      </div>
-      <div class="row" style="color:var(--dim);font-size:10px;line-height:1.4;padding-left:2px">
-        <span>Captures the current LDR voltage and writes it to the ESP32's NVS flash. Calibration persists across reboots.</span>
-      </div>
-      <div class="quickbar">
-        <button class="warn" onclick="if(confirm('Wipe calibration data on the ESP32?'))send('lux',{calibrate:'reset'})">⚠ Reset calibration</button>
-      </div>`) +
     moduleShell('led', 'LED load — 3 × CC', `
       ${['red','yel','grn'].map(c => `
         <div class="row">
@@ -1144,11 +1112,10 @@ function drawModuleChart(name) {
   ctx.fillRect(padL, padT, plotW, plotH);
 
   const ledOnly = traces.every(tr => tr.axis === 'AL');
-  // Cap voltage spans 10–18 V; LDR is 0–3.3 V. Both need their own axis.
+  // Cap voltage spans 10–18 V; other modules sit around the 10 V bus.
   const isCap = (name === 'cap');
-  const isLux = (name === 'lux');
-  const vLo = 0,                            vHi = isCap ? 18  : isLux ? 3.3 : 12;
-  const aLo = isCap ? -0.4 : isLux ? 0 : -2, aHi = isCap ? 0.4 : isLux ? 1 : 3;
+  const vLo = 0,                  vHi = isCap ? 18  : 12;
+  const aLo = isCap ? -0.4 : -2,  aHi = isCap ? 0.4 : 3;
   const alLo = 0, alHi = 1.2;
 
   const yV  = v => padT + (1 - (v - vLo)  / (vHi  - vLo))  * plotH;
@@ -1424,6 +1391,228 @@ function downloadCycleCsv() {
   const ts   = new Date(_cycleStartedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19);
   a.href     = url;
   a.download = `cap_cycle_${ts}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------- MPPT comparison test (3 modes × 4 irradiances) ----------
+// Mirrors the cap cycle test: drive pv firmware state machine via commands,
+// poll /tlm at 5 Hz for the duration, accumulate samples into a JS array,
+// build a CSV blob on completion. The firmware integrates the 7-second
+// p_avg at the full 1 kHz tick rate; the 5 Hz poll is just for CSV
+// granularity and live status display.
+
+let _mpptSamples       = [];
+let _mpptResults       = {};   // { '25-fixed': p_avg_W, '25-lut': ..., '100-po': ... }
+let _mpptPollTimer     = null;
+let _mpptRunning       = false;
+let _mpptStartedAt     = 0;
+let _mpptLastSeenIdx   = '';   // 'IRR-STEP' string for detecting cell transitions
+const MPPT_POLL_MS     = 200;  // 5 Hz, non-overlapping (see _mpptPollTick)
+
+function startMpptTest() {
+  const fv = parseFloat(document.getElementById('pv-test-fixed-vmpp').value);
+  if (!isFinite(fv) || fv < 5.0 || fv > 7.0) {
+    alert('Enter a valid Fixed Vmpp (5.0–7.0 V).');
+    return;
+  }
+  _mpptSamples     = [];
+  _mpptResults     = {};
+  _mpptLastSeenIdx = '';
+  _mpptStartedAt   = Date.now();
+  document.getElementById('pv-test-start').disabled = true;
+  document.getElementById('pv-test-next').disabled  = false;
+  document.getElementById('pv-test-abort').disabled = false;
+  document.getElementById('pv-test-csv').disabled   = true;
+  document.getElementById('pv-test-results').innerHTML = '';
+  send('pv', { mppt_test_start: 1, mppt_test_fixed_vmpp: fv });
+  _mpptRunning = true;
+  _mpptPollTick();
+}
+
+function nextMpptTest() {
+  send('pv', { mppt_test_next: 1 });
+}
+
+function abortMpptTest() {
+  send('pv', { mppt_test_abort: 1 });
+  // Let the poll loop catch the 'aborted' phase so the final sample lands.
+}
+
+async function _mpptPollTick() {
+  if (!_mpptRunning) return;
+  try { await mpptPollOnce(); } catch (e) { }
+  if (_mpptRunning) _mpptPollTimer = setTimeout(_mpptPollTick, MPPT_POLL_MS);
+}
+
+function _mpptStopPoll() {
+  _mpptRunning = false;
+  if (_mpptPollTimer) { clearTimeout(_mpptPollTimer); _mpptPollTimer = null; }
+  document.getElementById('pv-test-start').disabled = false;
+  document.getElementById('pv-test-next').disabled  = true;
+  document.getElementById('pv-test-abort').disabled = true;
+  document.getElementById('pv-test-csv').disabled   = (_mpptSamples.length === 0);
+}
+
+async function mpptPollOnce() {
+  const d = await poll('pv');
+  if (!d) return;
+  const ph = d.mppt_test_phase || 'idle';
+
+  _mpptSamples.push({
+    t_ms:        d.mppt_test_t_ms || 0,
+    phase:       ph,
+    irr_pct:     d.mppt_test_irr_pct || 0,
+    test_step:   d.mppt_test_step || '',
+    vmpp_target: d.vmpp_target,
+    v_panel:     d.v_panel,
+    iL:          d.iL,
+    p_panel:     d.p_panel,
+    p_avg_last:  d.mppt_test_p_avg_last,
+  });
+
+  // Detect cell completion: each completed recording posts a new p_avg_last
+  // value, and the (irr, step) pair has advanced. Use the *previous* sample's
+  // (irr, step) to key the result so we capture which cell the avg belongs to.
+  const n = _mpptSamples.length;
+  if (n >= 2) {
+    const prev = _mpptSamples[n - 2];
+    const cur  = _mpptSamples[n - 1];
+    const prevWasRec = (prev.phase === 'recording');
+    const stepChanged = (prev.irr_pct !== cur.irr_pct) || (prev.test_step !== cur.test_step);
+    if (prevWasRec && stepChanged && typeof cur.p_avg_last === 'number') {
+      const key = prev.irr_pct + '-' + prev.test_step;
+      _mpptResults[key] = cur.p_avg_last;
+    }
+  }
+
+  updateMpptStatus(d);
+
+  if (ph === 'done' || ph === 'aborted') {
+    // Capture the final cell's p_avg too (no following step to trigger the
+    // detector above).
+    if (ph === 'done' && typeof d.mppt_test_p_avg_last === 'number') {
+      // Walk backwards to find the last 'recording' sample; its (irr,step) is
+      // the cell whose avg landed on this 'done' transition.
+      for (let i = _mpptSamples.length - 1; i >= 0; i--) {
+        const s = _mpptSamples[i];
+        if (s.phase === 'recording') {
+          const key = s.irr_pct + '-' + s.test_step;
+          if (!(key in _mpptResults)) _mpptResults[key] = d.mppt_test_p_avg_last;
+          break;
+        }
+      }
+    }
+    _mpptStopPoll();
+    renderMpptResults();
+  }
+}
+
+function updateMpptStatus(d) {
+  const el = document.getElementById('pv-test-status');
+  if (!el) return;
+  const ph  = d.mppt_test_phase || 'idle';
+  const t   = d.mppt_test_t_ms || 0;
+  const irr = d.mppt_test_irr_pct || 0;
+  const stp = d.mppt_test_step || '';
+  const fmt = (x, dig) => (typeof x === 'number' && isFinite(x)) ? x.toFixed(dig) : '—';
+
+  if (ph === 'idle') {
+    el.innerHTML = '<i>Idle. Press Start MPPT test to begin.</i>';
+    return;
+  }
+
+  const phaseColor = (ph === 'done')    ? 'var(--ok)'
+                  :  (ph === 'aborted') ? 'var(--err)'
+                  :                       'var(--warn)';
+
+  let html =
+    `<b>Phase:</b> <span style="color:${phaseColor}">${ph}</span>` +
+    ` &nbsp;<b>t:</b> ${(t/1000).toFixed(1)} s` +
+    ` &nbsp;<b>Vpanel:</b> ${fmt(d.v_panel, 3)} V` +
+    ` &nbsp;<b>P:</b> ${fmt(d.p_panel, 3)} W` +
+    ` &nbsp;<b>samples:</b> ${_mpptSamples.length}`;
+
+  if (ph === 'awaiting_setup') {
+    html += `<br><b style="color:var(--warn)">⚠ Set lab dimmer to ${irr}% irradiance</b>` +
+            `, then click <b>Next irradiance</b> to begin the fixed → LUT → P&amp;O sweep.`;
+  } else if (ph === 'settling' || ph === 'recording') {
+    const winMs = (ph === 'settling') ? 3000 : 7000;
+    // We don't get phase_start back from firmware so the remaining countdown is
+    // approximate; the firmware does the precise timing.
+    html += `<br><b>Step:</b> ${irr}% / <b>${stp.toUpperCase()}</b>` +
+            ` &nbsp;<b>vmpp_target:</b> ${fmt(d.vmpp_target, 3)} V` +
+            ` &nbsp;<i>(${ph} ${Math.round(winMs/1000)} s window)</i>`;
+    if (typeof d.mppt_test_p_avg_last === 'number' && d.mppt_test_p_avg_last > 0) {
+      html += `<br><b>Last completed cell P̄:</b> ${fmt(d.mppt_test_p_avg_last, 3)} W`;
+    }
+  } else if (ph === 'done') {
+    html += `<br><b style="color:var(--ok)">✓ All 12 cells complete.</b> ` +
+            `Download CSV or review summary below.`;
+  } else if (ph === 'aborted') {
+    html += `<br><span style="color:var(--err)"><b>⚠ Test aborted.</b> ` +
+            `Partial CSV still available for download.</span>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderMpptResults() {
+  const el = document.getElementById('pv-test-results');
+  if (!el) return;
+  const irrs  = [25, 50, 75, 100];
+  const steps = ['fixed', 'lut', 'po'];
+  const fmt = (x) => (typeof x === 'number' && isFinite(x)) ? x.toFixed(3) : '—';
+
+  let html = '<table style="font-size:11px;margin-top:6px;border-collapse:collapse">' +
+    '<thead><tr style="color:var(--dim)">' +
+    '<th style="text-align:left;padding:2px 10px 2px 2px">Irradiance</th>' +
+    steps.map(s => `<th style="padding:2px 10px;text-align:right">P̄ ${s.toUpperCase()} (W)</th>`).join('') +
+    '<th style="padding:2px 10px;text-align:right">Best</th>' +
+    '</tr></thead><tbody>';
+  for (const irr of irrs) {
+    const cells = steps.map(s => _mpptResults[irr + '-' + s]);
+    const valid = cells.filter(v => typeof v === 'number');
+    const best  = valid.length ? Math.max.apply(null, valid) : null;
+    html += `<tr><td style="padding:2px;font-weight:600">${irr}%</td>`;
+    for (let i = 0; i < cells.length; i++) {
+      const v = cells[i];
+      const isBest = (best !== null && v === best);
+      const style = isBest ? 'color:var(--ok);font-weight:600' : '';
+      html += `<td style="padding:2px 10px;text-align:right;${style}">${fmt(v)}</td>`;
+    }
+    html += `<td style="padding:2px 10px;text-align:right;color:var(--dim)">${fmt(best)}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function downloadMpptCsv() {
+  if (_mpptSamples.length === 0) return;
+  const header = 't_ms,phase,irr_pct,test_step,vmpp_target_V,v_panel_V,iL_A,p_panel_W,p_avg_last_W';
+  const lines  = [header];
+  const f = (x, d) => (typeof x === 'number' && isFinite(x)) ? x.toFixed(d) : '';
+  for (const s of _mpptSamples) {
+    lines.push([
+      s.t_ms,
+      s.phase || '',
+      s.irr_pct || 0,
+      s.test_step || '',
+      f(s.vmpp_target, 4),
+      f(s.v_panel, 4),
+      f(s.iL, 4),
+      f(s.p_panel, 4),
+      f(s.p_avg_last, 4),
+    ].join(','));
+  }
+  const csv  = lines.join('\n') + '\n';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const ts   = new Date(_mpptStartedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.href     = url;
+  a.download = `pv_mppt_${ts}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

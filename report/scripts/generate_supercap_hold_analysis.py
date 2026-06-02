@@ -1,15 +1,23 @@
 """
-Supercapacitor hold-test + roundtrip-current analysis (Section 4.3 update).
+Supercapacitor cycle-test analysis: current sweep, bus-voltage sweep and
+hold-duration sweep (Section 4.3).
 
-Reads two families of cycle-test logs in report/data/hold/:
+Reads two families of cycle-test logs:
 
-  cap10V<I>A<hold>s(<run>).csv   - hold test at 0.2 A, hold = 60/120/180/240/300 s
-  cap10V<I>A(<run>).csv          - roundtrip test, hold = 0, I = 0.4/0.5/0.6 A
+  report/data/hold/cap10V<I>A<hold>s(<run>).csv   - hold test at 0.2 A,
+                                                    hold = 60/120/180/240/300 s
+  report/data/hold/cap10V<I>A(<run>).csv          - extended current sweep,
+                                                    hold = 0, I = 0.4/0.5/0.6 A
+  report/data/cap<bus>V<cur>A(<run>).csv          - original sweep (legacy),
+                                                    bus 8 - 10 V, I = 0.1 - 0.3 A
 
 Produces:
 
-  images/supercap_hold_self_discharge.png  - V_cap drift during hold + leakage rate
-  images/supercap_hold_efficiency.png      - eta_RT / eta_charge / eta_discharge vs I
+  images/supercap_efficiency.png            - 2-panel: eta_RT vs current
+                                              (full 0.1 - 0.6 A) and vs bus
+                                              voltage (8 - 10 V)
+  images/supercap_hold_duration.png         - 1-panel: eta_RT vs hold time
+  images/supercap_hold_self_discharge.png   - V_cap drift during hold
 
 For each (current, hold) group the script automatically discards incomplete
 or outlier runs (missing phases, |dV_hold| out of range, eta > 1.0, etc.)
@@ -354,13 +362,11 @@ def _sweep_panel(ax, xs_runs, xlabel, title, xpad, ylim, legend_loc="lower right
     ax.legend(loc=legend_loc, fontsize=9)
 
 
-def plot_efficiency(groups, outpath):
-    """Three-panel figure (matches supercap_efficiency.png style):
-       (a) eta_RT vs |I_cmd| at 10 V bus, hold=0 -- the full current sweep
-           including the new 0.4 / 0.5 / 0.6 A points.
-       (b) eta_RT vs V_bus at 0.2 A, hold=0 -- legacy bus-voltage sweep.
-       (c) eta_RT vs hold duration at 0.2 A, 10 V bus."""
-    fig, (axc, axb, axh) = plt.subplots(1, 3, figsize=(15, 4.4))
+def plot_efficiency_sweeps(groups, outpath):
+    """Two-panel figure: (a) eta_RT vs |I_cmd| at 10 V bus, hold=0 -- the full
+       current sweep including the 0.4 / 0.5 / 0.6 A points; (b) eta_RT vs
+       V_bus at 0.2 A, hold=0."""
+    fig, (axc, axb) = plt.subplots(1, 2, figsize=(11.0, 4.5))
 
     # (a) Current sweep at 10 V, hold=0
     cur_runs = {}
@@ -372,7 +378,7 @@ def plot_efficiency(groups, outpath):
             cur_runs[cur] = [r["eta_roundtrip"] for r in best]
     _sweep_panel(axc, cur_runs,
                  "Charge / discharge current (A)",
-                 "(a) Efficiency vs current (10 V bus, hold $=0$)",
+                 "(a) Efficiency vs current (10 V bus)",
                  xpad=0.05, ylim=(82, 94))
 
     # (b) Bus voltage sweep at 0.2 A, hold=0
@@ -385,10 +391,21 @@ def plot_efficiency(groups, outpath):
             bus_runs[bus] = [r["eta_roundtrip"] for r in best]
     _sweep_panel(axb, bus_runs,
                  "Bus voltage (V)",
-                 "(b) Efficiency vs bus voltage (0.2 A, hold $=0$)",
+                 "(b) Efficiency vs bus voltage (0.2 A)",
                  xpad=0.4, ylim=(82, 94))
 
-    # (c) Hold duration sweep at 10 V, 0.2 A
+    fig.suptitle("Supercapacitor round-trip efficiency (measured, 3 runs per point)",
+                 fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"  wrote {outpath}")
+
+
+def plot_hold_duration(groups, outpath):
+    """Single-panel figure: eta_RT vs hold duration at 10 V, 0.2 A."""
+    fig, ax = plt.subplots(1, 1, figsize=(8.0, 4.5))
+
     hold_runs = {}
     for (bus, cur, hold), runs in groups.items():
         if bus != 10.0 or cur != 0.2:
@@ -396,14 +413,12 @@ def plot_efficiency(groups, outpath):
         best = best_three(runs)
         if best:
             hold_runs[hold] = [r["eta_roundtrip"] for r in best]
-    _sweep_panel(axh, hold_runs,
+    _sweep_panel(ax, hold_runs,
                  "Hold duration $t_{hold}$ (s)",
-                 "(c) Efficiency vs hold duration (10 V, 0.2 A)",
+                 "Efficiency vs hold duration (10 V bus, 0.2 A)",
                  xpad=15, ylim=(60, 92), legend_loc="upper right")
 
-    fig.suptitle("Supercapacitor round-trip efficiency (measured, 3 runs per point)",
-                 fontsize=13)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.tight_layout()
     fig.savefig(outpath, dpi=150)
     plt.close(fig)
     print(f"  wrote {outpath}")
@@ -437,8 +452,9 @@ def main():
     n_runs = sum(len(v) for v in groups.values())
     print(f"  loaded {n_runs} usable runs across {len(groups)} (current, hold) groups")
     print_summary(groups)
-    plot_self_discharge(groups, os.path.join(IMG, "supercap_hold_self_discharge.png"))
-    plot_efficiency   (groups, os.path.join(IMG, "supercap_hold_efficiency.png"))
+    plot_self_discharge   (groups, os.path.join(IMG, "supercap_hold_self_discharge.png"))
+    plot_efficiency_sweeps(groups, os.path.join(IMG, "supercap_efficiency.png"))
+    plot_hold_duration    (groups, os.path.join(IMG, "supercap_hold_duration.png"))
 
 
 if __name__ == "__main__":

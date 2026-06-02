@@ -104,11 +104,11 @@ def read_va():
     # 4x oversample -- Pico ADC LSB noise is the dominant noise source.
     # ~10 us overhead inside a 1 ms tick budget.
     s = va_pin.read_u16() + va_pin.read_u16() + va_pin.read_u16() + va_pin.read_u16()
-    return 1.017 * (12490/2490) * 3.3 * (s >> 2) / 65536
+    return (12490/2490) * 3.3 * (s >> 2) / 65536
 
 def read_vb():
     s = vb_pin.read_u16() + vb_pin.read_u16() + vb_pin.read_u16() + vb_pin.read_u16()
-    return 1.015 * (12490/2490) * 3.3 * (s >> 2) / 65536
+    return (12490/2490) * 3.3 * (s >> 2) / 65536
 
 def sat(x, hi, lo):
     return max(lo, min(hi, x))

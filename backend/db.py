@@ -30,7 +30,7 @@ class GridSnapshot(Base):
 
 
 class ModuleSnapshot(Base):
-    """Per-role telemetry from firmware modules (pv, grid, export, cap, led, lux)."""
+    """Per-role telemetry from firmware modules (pv, grid, export, cap, led)."""
     __tablename__ = "module_snapshots"
 
     id          = Column(Integer, primary_key=True, index=True)
@@ -82,12 +82,6 @@ class ModuleSnapshot(Base):
     p_red = Column(Float)
     p_yel = Column(Float)
     p_grn = Column(Float)
-
-    # Lux / irradiance sensor
-    v_ldr      = Column(Float)
-    v_dark     = Column(Float)
-    v_full     = Column(Float)
-    calibrated = Column(Integer)
 
 
 def _fi(v):
@@ -186,10 +180,6 @@ def save_module_snapshot(payload):
         p_red       = _fi(g('p_red')),
         p_yel       = _fi(g('p_yel')),
         p_grn       = _fi(g('p_grn')),
-        v_ldr       = _fi(g('v_ldr')),
-        v_dark      = _fi(g('v_dark')),
-        v_full      = _fi(g('v_full')),
-        calibrated  = _ii(g('calibrated')),
     )
     db.add(snap)
     db.commit()

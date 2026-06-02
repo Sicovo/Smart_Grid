@@ -381,10 +381,6 @@ def _module_row_dict(row):
         "p_red":       row.p_red,
         "p_yel":       row.p_yel,
         "p_grn":       row.p_grn,
-        "v_ldr":       row.v_ldr,
-        "v_dark":      row.v_dark,
-        "v_full":      row.v_full,
-        "calibrated":  row.calibrated,
     }
 
 
@@ -392,7 +388,7 @@ def _module_row_dict(row):
 def get_all_modules_latest():
     db = SessionLocal()
     result = {}
-    for role in ['pv', 'grid', 'export', 'cap', 'led', 'lux']:
+    for role in ['pv', 'grid', 'export', 'cap', 'led']:
         row = (
             db.query(ModuleSnapshot)
             .filter(ModuleSnapshot.role == role)

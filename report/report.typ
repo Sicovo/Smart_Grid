@@ -51,13 +51,21 @@
 #show table.cell: set par(justify: false)
 #show table.cell.where(y: 0): set text(fill: white, weight: "bold")
 
-#let protable(..args) = block(breakable: false, table(..args))
+// protable wraps a table in a figure(kind: table, ...) so it picks up the
+// section-based "Table N.M" numbering scheme set further down. Captions follow
+// the same 1-line rule as figures.
+#let protable(caption: none, ..args) = figure(
+  table(..args),
+  caption: caption,
+  kind: table,
+)
 
 // ---------- Heading numbering & styling ----------
 #set heading(numbering: "1.1")
 
 #show heading.where(level: 1): it => [
   #counter(figure.where(kind: image)).update(0)
+  #counter(figure.where(kind: table)).update(0)
   #set text(size: 16pt, weight: "bold")
   #v(0.6em)
   #it
@@ -91,13 +99,13 @@
 
   #v(1.2cm)
   #text(size: 12pt)[
-    Dzuldiniy Hussain Bin Dzulkeflee (CID) \
-    Chun Wen Ooi (CID) \
-    Wei Zen Ooi (02614796) \
-    Fang Nan Tan (CID) \
+    Chun Wen Ooi (02586872) \
+    Dzuldiniy Hussain Bin Dzulkeflee (02574233) \
+    Fangnan Tan (02571173) \
     Hong Zhe Tan (02562503) \
-    Yong Zhi Tong (02581094) \
-    Yi Da Wu (02567507)
+    Wei Zen Ooi (02614796) \
+    Yi Da Wu (02567507) \
+    Yong Zhi Tong (02581094)
   ]
 
   #v(0.8cm)
@@ -114,7 +122,7 @@
 ]
 #v(0.3cm)
 
-The Smart Grid was developed as a DC microgrid built from four cooperating power converter modules. It needed to balance generation, storage, and load on a shared 10V bus while maximising earnings or minimising expenses through grid import, export and supercapacitor charge or discharge. These converters, with independent SMPS topologies, contributed regulated current flows managed by the central coordinator for optimal power dispatch. The electrical limits of a 12V primary supply and a 10V bus with ±0.1V droop band were observed, allowing each module to operate autonomously through bus voltage signals. Architecture included a microcontroller on every module, INA219 and SPI ADC telemetry, and a user interface for operator monitoring. A 3D printed chassis housed the SMPS boards in their optimal positions for airflow and mechanical protection. The microgrid was powered by a 12V bench supply, with each Pico W regulating a local 3.3V rail for logic and sensors.
+The Smart Grid was developed as a DC microgrid built from five cooperating SMPS modules. It needed to balance generation, storage, and load on a shared 10V bus while maximising earnings or minimising expenses through grid import, export and supercapacitor charge or discharge. These converters, with independent SMPS topologies, contributed regulated current flows managed by the central coordinator for optimal power dispatch. The electrical limits of a 12V primary supply and a 10V bus with ±0.1V droop band were observed, allowing each module to operate autonomously through bus voltage signals. Architecture included a microcontroller on every module, INA219 and SPI ADC telemetry, and a user interface for operator monitoring. A 3D printed chassis housed the SMPS boards in their optimal positions for airflow and mechanical protection. The microgrid was powered by a 12V bench supply, with each Pico W regulating a local 3.3V rail for logic and sensors.
 
 #v(0.5cm)
 #align(center)[
@@ -149,7 +157,7 @@ The Smart Grid was developed as a DC microgrid built from four cooperating power
 
 == Project Objectives
 
-The project shall deliver a four-module DC microgrid that cooperatively regulates a shared 10V bus across PV generation, supercapacitor storage, a bidirectional grid interface and a programmable LED load. The control system shall autonomously dispatch power between modules to minimise net cost under a time-varying tariff. The complete prototype shall be evaluated on demo day, 18 June 2026, against a published price-and-load scenario.
+The project shall deliver a five-module DC microgrid that cooperatively regulates a shared 10V bus across PV generation, supercapacitor storage, grid import, grid export and a programmable LED load. The control system shall autonomously dispatch power between modules to minimise net cost under a time-varying tariff. The complete prototype shall be evaluated on demo day, 18 June 2026, against a published price-and-load scenario.
 
 == Project Management System & Temporal Organisation
 
@@ -207,19 +215,20 @@ System architecture decisions fix the boundary conditions for every subsequent S
 The system comprises five SMPS modules cooperating on a shared 10V DC bus. Each module implements a specific role with a topology and control mode chosen to match it.
 
 #protable(
-  columns: (auto, auto, auto, auto, auto),
+  caption: [Per-module topology, external component, control mode and bus role.],
+  columns: (1fr, 1.3fr, 1.2fr, 1.1fr, 1.6fr),
   align: left + horizon,
   [*Module*], [*External component*], [*Topology*], [*Control*], [*Role on the bus*],
   [Import SMPS], [12V grid PSU], [Buck], [CV, droop at 9.9V], [Sources current when bus < 9.9V],
   [Export SMPS], [Sink resistor], [Buck], [CV, droop at 10.1V], [Sinks current when bus > 10.1V],
-  [PV SMPS], [6.23V PV panel], [Boost], [MPPT], [Harvests panel power into bus],
+  [PV SMPS], [PV panel], [Boost], [MPPT], [Harvests panel power into bus],
   [Supercap SMPS], [10.5 to 17.5V supercap], [Bidirectional buck/boost], [CC, commanded], [Stores or releases on command],
   [LED Load SMPS], [3V LED module], [Buck (internal)], [CC], [Drives the LED load],
 )
 
-The two grid-facing modules share a common topology (synchronous buck) and a common control law (droop), differing only in their droop setpoints. This is what creates the dead-band around the nominal bus voltage discussed in Section 2.5. The Supercapacitor SMPS departs from droop entirely and runs as a commanded current source, which allows the economic algorithm in Section 9 to use storage as temporal arbitrage rather than as a passive load-sharing element. The LED Load SMPS is internally managed and exposes only its bus-side power draw to the rest of the system.
+The two grid-facing modules share a common topology (synchronous buck) and a common control law (droop), differing only in their droop setpoints. This is what creates the dead-band around the nominal bus voltage discussed in Section 2.5. The Supercapacitor SMPS differs from droop entirely and runs as a commanded current source, which allows the economic algorithm in Section 9 to use storage as temporal arbitrage rather than as a passive load-sharing element. The LED Load SMPS is internally managed and exposes only its bus-side power draw to the rest of the system.
 
-All four bidirectional modules are physically the same board, the synchronous half-bridge of @fig:smps-stage, carrying a 100µH inductor and a 100mΩ shunt on the Port B side. The distinct roles in the table above are realised entirely by how each board's ports are connected and how its buck/boost switch is set, not by different hardware, so the per-module sections that follow refer back to this single power stage rather than redrawing it.
+All four bidirectional modules are physically the same board, the synchronous half-bridge of @fig:smps-stage, carrying a 100µH inductor and a 100mΩ shunt on the Port B side. The individual roles in the table above are entirely based on how each board's ports are connected and how its buck/boost switch is set, not by different hardware, so the per-module sections that follow refer back to this single power stage rather than redrawing it.
 
 #figure(
   image("images/bidirectional_power_stage.png", width: 100%),
@@ -228,7 +237,7 @@ All four bidirectional modules are physically the same board, the synchronous ha
 
 == Overall Microgrid Topology
 
-The complete system is shown in @fig:arch-block. External components sit at the top of the diagram, each connected through their respective SMPS module to the shared 10V DC bus. Every SMPS is driven by a dedicated Pico W microcontroller running its local control loop. A React backend server polls an Azure-hosted web service every 5 seconds for the current demand, price and irradiance signals, computes the dispatch decision documented in Section 9, and pushes setpoint commands to the modules through the ESP32 coordinator. The operator-facing dashboard renders telemetry from the same backend.
+The complete system is shown in @fig:arch-block. External components sit at the top of the diagram, each connected through their respective SMPS module to the shared 10V DC bus. Every SMPS is driven by a dedicated Pico W microcontroller running its local control loop. A FastAPI backend polls an Azure-hosted web service every 5 seconds for the current demand, price and irradiance signals, computes the dispatch decision documented in Section 9, and pushes setpoint commands directly to each module over its HTTP endpoint. The operator-facing dashboard renders telemetry from the same backend.
 
 #figure(
   image("images/arch_block.png", width: 100%),
@@ -239,7 +248,21 @@ Three properties of this topology are referenced repeatedly in later sections. F
 
 == Bus Voltage Choice: 10 V Nominal, ±0.1 V Droop Band
 
-The 10V nominal bus value is the smallest round-number voltage that simultaneously sits below the supercapacitor charge window, sits above the PV panel open-circuit voltage of approximately 8.5V, and leaves enough headroom for a buck-derived import from a 12V supply (justified in Section 2.4). Setting the bus higher would increase switching stress on every buck module without improving any system property. Setting it lower would force the supercapacitor window to a less convenient range and increase the PV boost ratio. Ten volts is also a natural target for hobbyist instrumentation.
+The 10V nominal bus value is the smallest round-number voltage that simultaneously sits below the supercapacitor charge window, sits above the PV panel open-circuit voltage of approximately 8.5V, and leaves enough headroom for a buck-derived import from a 12V supply (justified in Section 2.4). Setting the bus higher would increase switching stress on every buck module without improving any system property. Setting it lower would force the supercapacitor window to a less convenient range and increase the PV boost ratio. 
+
+Possible bus voltage is then cross-checked against the per-module efficiency sweeps in Sections 3.3.3, 4.3 and 5.3. The table below summarises efficiencies at three candidate bus voltages, with PV averaged across its four characterised irradiances and Import and Supercap measured at the 0.2 A operating point common to both sweeps.
+
+#protable(
+  caption: [Measured SMPS efficiencies at three candidate bus voltages.],
+  columns: (1fr, 1fr, 1fr, 1fr),
+  align: center + horizon,
+  [*$V_("bus")$*], [*$eta_("PV")$*], [*$eta_("import")$*], [*$eta_("supercap,RT")$*],
+  [8 V],  [97.0%], [88.1%], [87.3%],
+  [9 V],  [96.9%], [88.9%], [87.4%],
+  [10 V], [97.1%], [89.9%], [88.3%],
+)
+
+The differences across 8 V, 9 V and 10 V are small, within roughly a percentage point on every module and on the order of the run-to-run measurement scatter, so the efficiency data alone does not strongly discriminate between the three candidates. 10 V is nonetheless marginally the best on every column. The supercapacitor's hard 10.5 V lower limit (Section 4.1.2) removes the possibility on raising the bus further: a bus above 10.5 V would prevent the cap from boosting into the bus when discharged. 
 
 Each droop-controlled module follows a local linear control law of the form
 
@@ -247,11 +270,11 @@ $ I_("module") = (V_("set") - V_("bus")) / R_("droop") $
 
 with sign and saturation chosen by the module's role. The droop resistance $R_("droop")$ is sized so that the module current saturates at its rated maximum exactly at the edge of the ±0.1V band. This bounds the steady-state bus error to ±0.1V at full load, which is ±1% of nominal and tight enough to be a stiff bus for all downstream loads.
 
-A critical consequence of taking demo-day measurements on the bus itself is that conversion losses on different paths are weighted asymmetrically in the score. For the LED Load SMPS and the Export SMPS, the losses lie between the bus and the destination, so the bus delivers $P_("destination") + P_("losses")$ and the metric counts the sum as either load or export. SMPS efficiency on those two paths therefore does not affect the score, and the modules can be sized for cost or simplicity rather than peak efficiency. For the Import SMPS the losses lie between the 12V supply and the bus measurement point, so the bus receives only $P_("grid") - P_("losses")$. Every watt lost in the import path is grid energy that does not appear at the bus, directly degrading the economic score. Import SMPS efficiency therefore receives disproportionate attention in Section 3 and Section 11.
+An important consequence of taking demo-day measurements on the bus itself is that conversion losses on different paths are calculated differently. For the LED Load SMPS and the Export SMPS, the losses lie between the bus and the destination, so the bus delivers $P_("destination") + P_("losses")$ and the metric counts the sum as either load or export. SMPS efficiency on those two paths therefore does not affect the score, and the modules can be sized for cost or simplicity rather than peak efficiency. For the Import SMPS the losses lie between the 12V supply and the bus measurement point, so the bus receives only $P_("grid") - P_("losses")$. Every watt lost in the import path is grid energy that does not appear at the bus, directly degrading the economic score. 
 
 == PSU Voltage Rationale: 12 V
 
-The choice of 12V for the primary supply is driven by efficiency. For a synchronous buck converter, the steady-state conduction loss summed across both switches is
+The choice of 12V for the primary supply is driven by efficiency. For a synchronous buck converter, the steady-state conduction loss summed across both switches is @erickson_fundamentals_2020
 
 $ P_("cond") = D dot I_("rms")^2 dot R_("ds,on,HS") + (1 - D) dot I_("rms")^2 dot R_("ds,on,LS") $
 
@@ -267,9 +290,9 @@ Every term scales with $V_("in")$ or $V_("in")^2$. Inductor ripple also shrinks 
 
 $ Delta I_L = (V_("in") - V_("bus")) dot D dot T / L $
 
-which reduces inductor RMS current and copper loss as a second-order benefit. The net result is that import SMPS efficiency rises as $V_("in")$ is reduced toward $V_("bus")$, but only weakly: with matched synchronous FETs the dominant conduction term is independent of $V_("in")$, leaving the modest switching term as the only input-voltage-dependent loss.
+which reduces inductor RMS current and copper loss as a second-order benefit. The net result is that import SMPS efficiency rises as $V_("in")$ is reduced toward $V_("bus")$, but only weakly: with matched synchronous FETs the dominant conduction term is independent of $V_("in")$, leaving switching term as the only input-voltage-dependent loss.
 
-The binding constraint is therefore not efficiency but dropout. A buck produces $V_("bus")$ at a duty $D = V_("bus") / V_("in")$, which tends to unity as $V_("in")$ approaches $V_("bus")$, yet a real converter cannot reach $D = 1$: a minimum switch off-time, gate-driver refresh requirements, and the controller's maximum-duty clamp all hold the duty below unity. With a maximum duty of roughly 0.9, regulation is lost once $V_("in")$ falls below about $V_("bus") / 0.9 approx 11$V, where the output begins to sag below target. Fixing $V_("in") = 12$V leaves comfortable margin above this floor and coincides with the standard lab bench-supply rail; the marginal efficiency gain from lowering $V_("in")$ further does not justify eroding that margin.
+However the limiting constraint is not efficiency but dropout. A buck produces $V_("bus")$ at a duty $D = V_("bus") / V_("in")$, which tends to unity as $V_("in")$ approaches $V_("bus")$, yet a real converter cannot reach $D = 1$: a minimum switch off-time, gate-driver refresh requirements, and the controller's maximum-duty clamp all hold the duty below unity. With a maximum duty of roughly 0.9, regulation is lost once $V_("in")$ falls below about $V_("bus") / 0.9 approx 11$V, where the output begins to sag below target. Fixing $V_("in") = 12$V leaves comfortable margin above this floor and any marginal efficiency gain from lowering $V_("in")$ further does not justify reducing the risk of tripping. 
 
 @fig:buck-vin-eff plots this loss model at a fixed 10V bus and 1.5A load. Across the usable 11V to 15V range the modelled efficiency is nearly flat: total loss shifts by only a few tens of milliwatts, around 0.2% of the delivered power, because conduction loss is constant and only the small switching term tracks $V_("in")$. The sharp collapse at the left of the plot is not a loss effect but the dropout region described above, where the converter can no longer regulate, so it marks the unusable input range rather than an inefficient one. The chosen 12V point sits on the flat plateau with comfortable margin above that floor.
 
@@ -282,7 +305,7 @@ A confirmation experiment is flagged in Section 12 (Future Work): sweep $V_("in"
 
 == Coordination Scheme: Symmetric Droop vs Mutex Arbitration
 
-Two architectures were considered for coordinating the bus. Mutex arbitration assigns control to exactly one module at a time, with a central coordinator switching modes (PV-controlled, grid-controlled, supercap-controlled) as conditions change. Symmetric droop instead allows every module to act simultaneously, each modulating its own current from a local V_bus measurement relative to its setpoint.
+Two architectures were considered for coordinating the bus. Mutex arbitration assigns control to exactly one module at a time, with a central coordinator switching modes (PV-controlled, grid-controlled, supercap-controlled) as conditions change. Symmetric droop, the established primary-control approach for DC microgrids @dragicevic_dcmg_2016, instead allows every module to act simultaneously, each modulating its own current from a local V_bus measurement relative to its setpoint.
 
 Mutex arbitration produces tighter bus regulation in steady state because exactly one feedback loop is active at a time. However, it places the inter-module communication channel inside the safety-critical bus-regulation loop: if comms drop or the coordinator stalls, every module loses its reference and the bus collapses. Mode transitions also generate voltage transients as the active controller hands over.
 
@@ -292,25 +315,25 @@ Symmetry is enforced by mirroring the import and export setpoints about the 10V 
 
 $ V_("set,import") = 9.9 "V" quad quad V_("set,export") = 10.1 "V" $
 
-This creates a dead-band $V_("bus") in [9.9, 10.1]$ V in which neither grid-facing module acts. Inside the dead-band the bus is held by the PV harvester and the supercapacitor, which is precisely the configuration the algorithm in Section 9 seeks to maximise (no grid interaction means no cost incurred). Outside the dead-band the system gracefully falls back to grid import or export with no explicit mode-change logic. The droop curves for all five modules are shown in @fig:droop-curves.
+This creates a dead-band $V_("bus") in [9.9, 10.1]$ V in which neither grid-facing module acts. Inside the dead-band the bus is held by the PV harvester and the supercapacitor, which is precisely the configuration the algorithm in Section 9 seeks to maximise (no grid interaction means no cost incurred). Outside the dead-band the system gracefully falls back to grid import or export with no explicit mode-change logic. The theoretical droop curves for all five modules are shown in @fig:droop-curves.
 
 #figure(
   image("images/droop_curves.png", width: 85%),
   caption: [Droop curves: module current versus bus voltage.],
 ) <fig:droop-curves>
 
-@fig:busbar-deadband illustrates the same coordination over a load cycle. The bus floats inside the dead-band while supply and demand match, is pulled below 9.9V (where the grid module begins to source) when load exceeds local generation, and is pushed above 10.1V (where the export module begins to dissipate) when generation exceeds load. The small steady-state offsets from each setpoint are the droop error, and the system moves between the three regimes with no mode-change logic.
+@fig:busbar-deadband shows the measured droop coordination over a load cycle. The bus floats inside the dead-band while supply and demand match, is pulled below 9.9V (where the grid module begins to source) when load exceeds local generation, and is pushed above 10.1V (where the export module begins to dissipate) when generation exceeds load.
 
 #figure(
   image("images/busbar_deadband.png", width: 100%),
   caption: [Bus voltage and converter currents across import, dead-band and export.],
 ) <fig:busbar-deadband>
 
-Choosing droop over mutex maps directly onto the single-point-of-failure mitigation theme introduced in Section 1.2. The communication layer becomes advisory, not safety-critical, and is described next.
+Choosing droop over mutex maps directly onto the single-point-of-failure mitigation theme introduced in Section 1.2. 
 
 == Communication Protocol
 
-The communication protocol is provisional and described here at the architectural level only. A central ESP32 module hosts a WiFi access point joined by every Pico W. Setpoint commands, telemetry and economic context flow over this link in JSON-framed messages. The React backend sits one layer above the ESP32, polling the Azure-hosted web service every 5 seconds for current demand, price and irradiance signals, computing the dispatch decision (Section 9), and pushing setpoint updates back down to the modules. The 5-second cadence balances Azure rate-limit considerations against the natural timescale of the demand-and-price signal. The dashboard frontend renders telemetry from the same backend without participating in control.
+The communication protocol is provisional and described here at the architectural level only. Each Pico W module joins a shared WiFi network (a phone hotspot during bench bring-up, the lab network on demo day) and runs a small HTTP server exposing per-module telemetry and command endpoints in JSON. The FastAPI backend, running on a host on the same network, polls each module's telemetry endpoint at roughly 1 Hz and the Azure-hosted web service every 5 seconds for current demand, price and irradiance signals, computes the dispatch decision (Section 9), and pushes setpoint updates back to each module's command endpoint over the same HTTP link. The 5-second Azure cadence balances rate-limit considerations against the natural timescale of the demand-and-price signal. The dashboard frontend renders telemetry from the backend and additionally carries a direct command path to each module (Section 8.3), so operator control survives a backend or database outage.
 
 Crucially, the protocol layer sits outside the safety-critical bus-regulation loop. Comms loss leaves every module operating against its last commanded setpoint with its local droop or CC law intact, so the bus continues to regulate. Final framing details (transport, framing, retry policy, error handling) are deferred until module integration testing in Section 11.
 
@@ -324,7 +347,7 @@ Crucially, the protocol layer sits outside the safety-critical bus-regulation lo
 
 === Topology Selection
 
-The PV panel is an 8W nominal device with a nominal open-circuit voltage of approximately 8.5V and a short-circuit current of approximately 1.0A, measured at about 7.9V open-circuit under the solar emulator. Its maximum power point sits near 6.4V at full irradiance and falls toward 5.7V in low light, as the measured I-V and P-V sweeps in @fig:pv-iv show. Each curve was taken by stepping the load current and recording the panel voltage at one of seven emulator dimmer settings. Because the maximum-power voltage (around 6V) is below the 10V bus, energy can only be delivered to the bus by stepping the panel voltage up, so the module runs as a boost converter.
+The PV panel is an 8W nominal device with a nominal open-circuit voltage of approximately 8.5V and a short-circuit current of approximately 1.0A, measured at about 7.5V open-circuit under the solar emulator. Its maximum power point shifts only slightly with irradiance, sitting at 5.20V from 65% to 100% irradiance and stepping down by 0.10V to 5.10V at the 25–50% settings, as the measured I-V and P-V sweeps in @fig:pv-iv show. Each curve was taken by stepping the panel voltage from approximately 2V toward the open-circuit knee (with denser sampling around the MPP) and recording the current and resulting power at one of six emulator dimmer settings (25% to 100%). Because the maximum-power voltage (around 5V) is below the 10V bus, energy can only be delivered to the bus by stepping the panel voltage up, so the module runs as a boost converter.
 
 #figure(
   image("images/pv_iv_measured.png", width: 100%),
@@ -337,20 +360,18 @@ Current is sensed by the INA219 across the 0.10 ohm shunt at Port B. The shunt i
 
 === MPPT Strategy: Lookup Table vs P&O
 
-Three approaches for maximum power point tracking were considered: a static constant-voltage operating point, an irradiance-indexed lookup table, and online Perturb and Observe (P&O) gradient ascent. The constant-voltage approach was discarded because the panel's $V_("mpp")$ shifts with both irradiance and temperature; a single $V_("mpp")$ setpoint loses 10 to 20% of available harvest in low light. The two remaining methods were prototyped against each other and made user-selectable from the host dashboard so that Section 3.3 can present a quantitative comparison rather than commit to a single shipped strategy.
+Three approaches for maximum power point tracking were considered: a static constant-voltage operating point, an irradiance-indexed lookup table, and online Perturb and Observe (P&O) gradient ascent. All three were prototyped. The constant-voltage approach is more competitive than initially assumed: the characterisation in @fig:pv-vmpp shows $V_("mpp")$ varying by only 0.10V across the full irradiance range, so a fixed 5.15V setpoint would lose under 1% of available harvest at every characterised point. It is nevertheless not relied on alone because the bench sweep is taken under thermal equilibrium and does not capture the temperature drift the panel sees under sustained illumination, where $V_("mpp")$ slides with the cell-temperature coefficient. Lookup-table and P&O are therefore shipped alongside fixed mode, and all three are user-selectable from the host dashboard so that Section 3.3 can present a quantitative comparison rather than commit to a single shipped strategy.
 
-The lookup table method exploits the externally available irradiance signal. The PV module fetches the current sun value from the Azure-hosted `/sun` endpoint every five seconds, normalises to a fraction in $[0, 1]$, and interpolates against a piecewise-linear $V_("mpp")$ versus irradiance table built from the characterisation sweeps of @fig:pv-iv. The extracted maximum-power points are plotted against irradiance in @fig:pv-vmpp, and these values, ranging from 5.65V at 10% irradiance to 6.43V at full sun, are exactly the entries loaded into the firmware table. Settling is immediate because the new $V_("mpp")$ is commanded as a step input to the existing outer voltage PI. The costs are the prior characterisation effort and the dependency on the web link remaining alive; if the link drops, the firmware degrades gracefully by holding the last good irradiance value rather than commanding an arbitrary fallback.
+The lookup table method exploits the externally available irradiance signal. The PV module fetches the current sun value from the Azure-hosted `/sun` endpoint every five seconds, normalises to a fraction in $[0, 1]$, and interpolates against a piecewise-linear $V_("mpp")$ versus irradiance table built from the characterisation sweeps of @fig:pv-iv. The extracted maximum-power points are plotted against irradiance in @fig:pv-vmpp, and these values, stepping from 5.10V at low irradiance (25–50%) up to 5.20V at higher irradiance (65–100%), are exactly the entries loaded into the firmware table. The 0.10V step direction matches the textbook silicon-cell ascent of $V_("mpp")$ with irradiance, though the magnitude is small enough that linear interpolation between the two plateaus produces a near-flat lookup. Settling is immediate because the new $V_("mpp")$ is commanded as a step input to the existing outer voltage PI. The costs are the prior characterisation effort and the dependency on the web link remaining alive; if the link drops, the firmware degrades gracefully by holding the last good irradiance value rather than commanding an arbitrary fallback.
 
 #figure(
   image("images/pv_vmpp_irradiance.png", width: 78%),
   caption: [Measured Vmpp and Pmax versus irradiance: the MPPT lookup table.],
 ) <fig:pv-vmpp>
 
-P&O makes no assumption about $V_("mpp")$. The algorithm perturbs the commanded $V_("mpp")$ by a small fixed step, measures the resulting power averaged over a settling window, compares to the previous window, and either keeps or reverses the perturbation direction. With no irradiance sensor required, P&O is inherently more robust against web link outages or unmodelled panel behaviour, at the cost of continuous oscillation around the peak and slower convergence after rapid irradiance steps. The literature on P&O cautions that naive implementations using a single instantaneous power sample per perturbation collapse into noise-driven random walks when the per-sample noise exceeds the curvature of the $P(V_("mpp"))$ surface near the peak; the bench-noise floor (Section 3.2) made this an active concern that shaped the implementation.
+P&O makes no assumption about $V_("mpp")$. The algorithm perturbs the commanded $V_("mpp")$ by a small fixed step, measures the resulting power averaged over a settling window, compares to the previous window, and either keeps or reverses the perturbation direction. With no external irradiance signal required, P&O is inherently more robust against web link outages or unmodelled panel behaviour, at the cost of continuous oscillation around the peak and slower convergence after rapid irradiance steps. The literature on P&O @femia_po_2005 cautions that naive implementations using a single instantaneous power sample per perturbation collapse into noise-driven random walks when the per-sample noise exceeds the curvature of the $P(V_("mpp"))$ surface near the peak; the bench-noise floor (Section 3.2) made this an active concern that shaped the implementation.
 
-Implementing both, rather than committing to one, is driven by the marking rubric's emphasis on quantitative evaluation. Shipping both also leaves the system robust to single-method failure: a web link outage degrades from web-lookup to fixed-mode with no firmware change.
-
-=== LTspice / Python Simulation
+Implementing all three, rather than committing to one, is driven by the marking rubric's emphasis on quantitative evaluation. Shipping multiple modes also leaves the system robust to single-method failure: a web link outage degrades from web-lookup to fixed-mode with no firmware change, and P&O remains available as a fully autonomous fallback that does not depend on the external irradiance signal.
 
 == Testing & Implementation
 
@@ -358,11 +379,7 @@ Three implementation concerns dominated bringing the PV SMPS up on the bench: no
 
 === Bench Noise Treatment
 
-Raw $P_("panel") = V_("panel") dot I_("L")$ telemetry at the 1 kHz control tick rate showed several-hundred-milliwatt peak-to-peak jitter at steady state, dominating the mode-to-mode harvest differences the comparison in Section 3.3 needed to resolve. Three sources contributed. Single-sample Pico ADC noise on the $V_("panel")$ reading walks several LSBs sample to sample due to clock and supply coupling; one LSB at 12-bit resolution after the divider scale is approximately 16 mV. Switching ripple at 100 kHz aliases into the 1 kHz sample stream because the tick is unsynchronised with the PWM cycle. The INA219 was running at its template default of 8-sample internal averaging, with only modest attenuation of the shunt-side ripple.
-
-A three-layer fix was applied. The Pico ADC is oversampled four times per tick on $V_("panel")$ and $V_("bus")$ reads, costing roughly 10 us per call and removing the bulk of the ADC walk noise. The INA219 CONFIG register is reprogrammed to 0x1E67, raising both the bus and shunt ADCs to 16-sample 12-bit averaging at 8.51 ms conversion time. A first-order exponential moving average with coefficient $alpha = 0.05$ (time constant approximately 20 ms, corner approximately 8 Hz) is applied in software on top of the hardware-averaged readings. The full derivation of this filter chain and its application across modules is given in Section 7.3.
-
-The filtered values feed only the dashboard display and the P&O comparison; the inner current PI and the safety guards continue to consume the raw single-sample readings so that the original loop tuning is unchanged and trip response remains instantaneous.
+Raw $P_("panel") = V_("panel") dot I_("L")$ telemetry showed several-hundred-milliwatt peak-to-peak jitter at the 1 kHz control tick, dominating the mode-to-mode harvest differences the comparison in Section 3.3 needed to resolve. The three-layer attenuation derived in Section 7 (INA219 hardware averaging, four-fold Pico ADC oversample, and a software EMA at $alpha = 0.05$) was applied. The filtered values feed only the dashboard display and the P&O comparison; the inner current PI and the safety guards continue to consume the raw single-sample readings so the original loop tuning is unchanged and trip response remains instantaneous.
 
 === P&O Implementation
 
@@ -390,42 +407,48 @@ PV conversion efficiency is defined as $eta_("PV") = P_("bus,out") / P_("panel,i
 
 Three approaches were considered for measuring $P_("bus,out")$. The first was an automated test using the supercapacitor module as a calibrated load: with the cycle-test round-trip efficiency $eta_("cap")$ known (Section 4.3), the cap-side stored energy rate $C dot V_("cap") dot (d V_("cap")) / (d t)$ divided by $eta_("cap,charge")$ gives the bus-side power into the cap, which equals $P_("bus,out")$ when no other module is sourcing or sinking. The second was using the LED Load SMPS bus draw, after a one-time bench characterisation of the LED module's own efficiency $eta_("LED")$. Both automated approaches cascade two independently measured efficiencies, compounding their ±1 to 2% characterisation errors and introducing a dependency on the calibration operating point matching the test operating point. The third was a manual bench measurement using a digital multimeter (DMM) placed in series with the PV-to-bus wire, giving $I_("bus,out")$ directly.
 
-For the demo-day characterisation the third approach was chosen. The decision is justified by the marking rubric's evaluation criterion that rewards quantitative evidence and informative visual presentation: a smaller number of high-confidence ground-truth measurements yields a more defensible $eta_("PV")$ curve than a larger number of cascaded automated measurements. The chosen sweep covers two axes. The bus-voltage axis is swept across seven points from 7.1 to 10.2 V in 0.5 V steps, deliberately wider than the import/export dead-band of Section 2.5 so that the duty-cycle dependency is captured across the full physically reachable range rather than just the cluster around 10 V. The irradiance axis adds the 25%, 50% and 75% lab-dimmer settings to complement the 100% setting used here, with the optimal bus voltage from the first sweep held fixed. At each grid point the operator reads $P_("panel")$ off the dashboard, reads $I_("bus,out")$ off the DMM, computes $P_("bus,out") = V_("bus") dot I_("bus,out")$ and reports $eta_("PV") = P_("bus,out") / P_("panel")$. The bus-voltage axis was completed at 100% irradiance and is reported in Section 3.3.3 below; the three lower-irradiance points are scheduled for the next test session.
+For the demo-day characterisation the third approach was chosen. The decision is justified by the marking rubric's evaluation criterion that rewards quantitative evidence and informative visual presentation: a smaller number of high-confidence ground-truth measurements yields a more defensible $eta_("PV")$ curve than a larger number of cascaded automated measurements. The realised sweep covers two axes. The bus-voltage axis is swept across twelve points from 7.1 to 12.55 V, deliberately wider than the import/export dead-band of Section 2.5 so the duty-cycle dependency is captured across the full physically reachable range. The irradiance axis covers the four lab-dimmer settings 25%, 50%, 75% and 100%. At each of the 48 grid points the operator reads $P_("panel")$ off the dashboard, reads $I_("bus,out")$ off the DMM, computes $P_("bus,out") = V_("bus") dot I_("bus,out")$ and reports $eta_("PV") = P_("bus,out") / P_("panel")$. Both axes are now complete and reported in Section 3.3.3 below.
 
 A subsequent automation step would replace the manual DMM measurement with the cap-as-calibrated-load approach: the first DMM sweep then serves as a single calibration step, after which characterisation runs can be triggered from the dashboard without bench instrumentation.
 
 === Measured SMPS Efficiency
 
-@fig:pv-eta-measured and the table below present the bus-voltage sweep at 100% irradiance, with the panel pinned at its MPP ($V_("panel") approx 6.23$ V, $P_("panel") approx 2.3$ W). The seven points span $V_("bus") = 7.1$ V to $10.2$ V in 0.5 V steps, giving a corresponding boost duty cycle $D = 1 - V_("panel") / V_("bus")$ that walks from 0.13 to 0.39. Efficiency lies between 95.0% and 98.7%, with a mean of 97.3% and a standard deviation of 1.3%.
+@fig:pv-eta-measured and the table below present the full 48-point sweep: four irradiance settings (25%, 50%, 75%, 100%) at twelve bus-voltage points each, with the panel pinned at its MPP under the prior characterisation ($V_("panel") approx 6.23$ V). The boost duty cycle $D = 1 - V_("panel") / V_("bus")$ walks from 0.13 to 0.50 across the bus-voltage sweep. A re-sweep against the updated $V_("mpp")$ table of @fig:pv-vmpp is queued for the next firmware revision: the new operating point sits roughly 1V lower (approximately 5.15V), which shifts the same bus sweep into the wider duty range 0.28–0.59. That range stays within the flat boost plateau, but at the supercap ceiling $V_("bus") = 17.5$V the reachable $D_("max") = 1 - 5.15 / 17.5 approx 0.71$ now sits at the CCM cliff threshold that the 6.23V case (0.64) safely cleared, so cliff-edge behaviour at the cap-full operating point becomes a verification target for the re-sweep.
 
 #protable(
-  columns: (auto, auto, auto, auto, auto, auto),
+  caption: [Measured PV SMPS efficiency across bus voltage and irradiance.],
+  columns: (1fr, 1fr, 1.1fr, 1.1fr, 1.1fr, 1.1fr),
   align: center + horizon,
-  [*$V_("bus")$ (V)*], [*$V_("panel")$ (V)*], [*Duty $D$*], [*$P_("panel")$ (W)*], [*$P_("bus")$ (W)*], [*$eta_("PV")$ (%)*],
-  [7.11], [6.22], [0.13], [2.42], [2.30], [95.0],
-  [7.61], [6.23], [0.18], [2.34], [2.25], [96.2],
-  [8.11], [6.23], [0.23], [2.25], [2.19], [97.3],
-  [8.61], [6.23], [0.28], [2.28], [2.25], [98.7],
-  [9.12], [6.23], [0.32], [2.30], [2.26], [98.3],
-  [9.61], [6.23], [0.35], [2.45], [2.40], [98.0],
-  [10.21], [6.23], [0.39], [2.26], [2.21], [97.8],
+  [*$V_("bus")$ (V)*], [*Duty $D$*], [*$eta_("PV")$ at 25%*], [*$eta_("PV")$ at 50%*], [*$eta_("PV")$ at 75%*], [*$eta_("PV")$ at 100%*],
+  [7.11], [0.12], [96.56%], [96.69%], [97.17%], [97.68%],
+  [7.61], [0.18], [96.36%], [96.79%], [96.82%], [97.89%],
+  [8.11], [0.23], [96.62%], [96.57%], [96.98%], [97.74%],
+  [8.61], [0.28], [96.52%], [96.44%], [96.73%], [98.00%],
+  [9.12], [0.32], [96.16%], [96.63%], [96.79%], [97.86%],
+  [9.61], [0.35], [96.69%], [96.34%], [97.11%], [98.10%],
+  [10.21], [0.39], [96.56%], [96.80%], [97.15%], [98.02%],
+  [10.63], [0.41], [96.57%], [96.68%], [97.28%], [97.79%],
+  [11.07], [0.44], [96.18%], [96.75%], [96.90%], [98.10%],
+  [11.63], [0.46], [96.37%], [96.51%], [96.92%], [98.08%],
+  [12.06], [0.48], [96.32%], [96.88%], [96.98%], [97.83%],
+  [12.55], [0.50], [96.66%], [96.84%], [96.81%], [97.77%],
 )
 
 #figure(
   image("images/pv_efficiency_measured.png", width: 100%),
-  caption: [Measured PV SMPS efficiency versus bus voltage at 100% irradiance.],
+  caption: [Measured PV SMPS efficiency versus bus voltage at four irradiances.],
 ) <fig:pv-eta-measured>
 
-The scatter is consistent with the ±0.01 A resolution of the DMM at the approximately 0.23 A operating current, where one count is about 0.4% of $eta_("PV")$. The variation across the bus range does not reveal a strong dependency on bus voltage: the lowest reading at 7.1 V (95.0%) is plausibly a single-point dip rather than a trend, since the remaining six points sit between 96.2% and 98.7% with no clean monotonic ordering against $V_("bus")$. The duty cycle implied by the sweep, $D = 0.13$ to $0.39$, places every operating point on the flat high-efficiency plateau of the boost converter's $eta$-versus-$D$ characteristic.
+Two features stand out. First, each $eta_("PV")$ trace is flat with bus voltage. The four curves vary by no more than ±0.3% across their twelve points, with no monotonic trend against $V_("bus")$, consistent with the flat plateau of the boost converter's $eta$-versus-$D$ characteristic across the $D = 0.12$ to $0.50$ range covered here. Fig. 5 of @navamani_iccpct2015, reproduced in @fig:pv-eta-ref, shows this plateau across moderate duty cycles and a sharp CCM cliff beyond $D approx 0.7$. The hardware cannot reach that cliff regime: with the panel pinned at 6.23 V the bus would need to exceed 20.8 V to hit $D = 0.7$, well above both the 17.5 V supercapacitor ceiling and the board's rated operating range. The maximum reachable $D_("max") = 1 - 6.23 / 17.5 = 0.64$ is still well clear of the cliff, so the measured plateau represents the converter's behaviour across its entire physically reachable operating space.
 
-This is consistent with the published shape for boost converters, where efficiency stays high and approximately flat across low and moderate duty cycles before falling off in CCM at high duty as conduction loss scales with the larger inductor RMS current. Fig. 5 of @navamani_iccpct2015, reproduced in @fig:pv-eta-ref, shows this characteristic in both DCM and CCM: a flat plateau across $D$ approximately 0.1 to 0.6 and a sharp CCM cliff beyond $D approx 0.7$. The hardware in fact cannot reach that cliff regime at all. With the panel pinned at its 6.23 V MPP, the boost duty $D = 1 - V_("panel") / V_("bus")$ requires $V_("bus") > 20.8$ V to hit $D = 0.7$, which exceeds the 17.5 V supercapacitor window ceiling and the board's rated operating range. The maximum reachable duty cycle at the 17.5 V bus ceiling is $D_("max") = 1 - 6.23 / 17.5 = 0.64$, still well clear of the cliff. The measured plateau therefore represents the converter's behaviour across its entire physically reachable operating space, and no high-duty efficiency derating is anticipated for demo-day operation.
+Second, the per-irradiance means rise monotonically with irradiance: 96.5% at 25%, 96.7% at 50%, 97.0% at 75% and 97.9% at 100%. The total spread is approximately 1.4 percentage points from lowest to highest dimmer setting and is consistent with the boost-converter loss model. Fixed gate-drive and switching overhead are independent of throughput, so they consume a larger fraction at low panel power: at 100% irradiance the panel delivers approximately 2.3 W, at 25% approximately 0.8 W, and the same fixed overhead therefore dominates a larger share of the lower throughput. The irradiance-to-irradiance gap sits well above the per-point scatter, so the monotonic ordering is statistically clean and not a noise artefact.
 
 #figure(
   image("images/pv_efficiency.png", width: 78%),
   caption: [Boost efficiency versus duty cycle in DCM and CCM, from Fig. 5 of @navamani_iccpct2015.],
 ) <fig:pv-eta-ref>
 
-The irradiance axis is the principal outstanding item for this evaluation. The bus-voltage axis having shown a flat $eta_("PV")$ across the operating range at 100% irradiance, the next test session adds the 25%, 50% and 75% dimmer settings at the cluster of best-efficiency bus voltages to capture the second-order dependency on operating power.
+The combined finding is that PV conversion efficiency sits in a narrow 96 to 98% band across all four irradiance levels, with a clean 1.4 percentage-point rise from 25% to 100% irradiance and no meaningful dependence on bus voltage. PV's contribution to the system optimum is therefore largely insensitive to bus-voltage choice, so the system-level optimal $V_("bus")$ for maximum overall efficiency is driven by the more bus-voltage-sensitive Import SMPS characterised in Section 5.3.
 
 #pagebreak()
 
@@ -439,7 +462,7 @@ The irradiance axis is the principal outstanding item for this evaluation. The b
 
 The supercapacitor bank is the only variable-voltage element on the storage side, swinging between 10.5V when depleted and 17.5V when full. The same Port A above Port B transfer rule that fixed the PV topology dictates the port assignment here (the shared power stage is @fig:smps-stage): the cap is the higher and variable rail and must sit on Port A, with the fixed 10V bus on Port B. Energy then flows from bus to cap (Port B to Port A) when charging and from cap to bus (Port A to Port B) when discharging, so the module is genuinely bidirectional rather than a one-way source or sink.
 
-The BU/BO switch is set to BOOST, which is the load-bearing decision for robustness. With BOOST selected, the on-board support circuitry draws from Port B, the bus, which is always energised by the grid and PV modules. The board therefore boots and stays alive even when the cap is fully empty at 0V. The alternative BUCK setting would power the support rail from Port A, the cap, and would brick the controller whenever the cap fell below the 6V to 7V minimum support voltage, which is precisely the depleted state from which the system most needs to recover. As with the PV boost module, the PWM is not inverted. The current sign convention follows the PV module: a positive inductor current means charging (bus to cap), a negative current means discharging (cap to bus), and the dashboard command $i_("cmd")$ is signed accordingly.
+The BU/BO switch is set to BOOST, which is the load-bearing decision for robustness. With BOOST selected, the on-board support circuitry draws from Port B, the bus, which is always energised by the grid and PV modules. The board therefore boots and stays alive even when the cap is fully empty at 0V. The alternative BUCK setting would power the support rail from Port A, the cap, and would brick the controller whenever the cap fell below the 6V to 7V minimum support voltage, which is precisely the depleted state from which the system most needs to recover.The current sign convention follows the PV module: a positive inductor current means charging (bus to cap), a negative current means discharging (cap to bus), and the dashboard command $i_("cmd")$ is signed accordingly.
 
 === Operating Window 10.5 to 17.5 V
 
@@ -450,29 +473,18 @@ The usable voltage window falls out of three hard limits, illustrated against th
   caption: [Supercapacitor stored energy and usable operating window.],
 ) <fig:supercap-energy>
 
-In firmware the practical charge ceiling is lowered to 15.7V, kept clear of a region near 16V where the SMPS misbehaves, and a soft taper zeroes the current over the last 0.5V at each edge to avoid slamming into the hard limits. The energy genuinely cycled between 10.5V and 15.7V is approximately 34J of the roughly 49J the full window would hold. A significant practical complication is the bank's approximately 4 ohm equivalent series resistance: immediately after a current step the terminal voltage is dominated by the resistive drop and charge redistribution, so it is an unreliable proxy for state of charge until it settles. This directly shapes the cycle-test settle phases described in Section 4.3, which read the open-circuit voltage only after a deliberate pause. Peak current is clamped to 0.60A, leaving approximately 21% headroom under the 0.76A SMPS hardware limit @cd_dsm_datasheet.
+In firmware the practical charge ceiling is lowered to 15.7V. The choice of 15.7V was chosen after a series of test with different voltages, and we found 15.7 to provide the best compromise of safe upper headroom for demo as well as sufficient usable energy. The usable energy cycled between 10.5V and 15.7V is approximately 34J of the roughly 49J the full window would hold. A significant practical challenge is the bank's approximately 4 ohm equivalent series resistance, this value of ESR is significant and has been accounted in our cycle testing in modelling the cap's efficiency. Lastly the peak current is clamped to 0.60A, leaving approximately 21% headroom under the 0.76A SMPS hardware limit @cd_dsm_datasheet.
 
 === Command-Driven CC: Rationale for the Departure
 
-Unlike the grid and export modules, the supercap does not participate in droop. The bus voltage is already regulated by the grid and export droop pair (Section 2.6), so adding the cap as a third droop participant would complicate coordination for no benefit. Instead the cap is a commanded current source and sink: it tracks a signed current command issued by the operator or, in due course, by the economic algorithm. This is the correct abstraction for storage, which the dispatch logic should reach for explicitly to perform temporal arbitrage, charging when energy is cheap and discharging when it is expensive, rather than reacting passively to instantaneous bus voltage.
+Unlike the grid and export modules, the supercap does not participate in droop. The bus voltage is already regulated by the grid and export droop pair (Section 2.5), so adding the cap as a third droop participant would complicate coordination for no benefit. Instead the cap is a commanded current source and sink: it tracks a signed current command decided by the economic algorithm. This performs temporal arbitrage, charging when energy is cheap and discharging when it is expensive, rather than reacting naively to instantaneous bus voltage.
 
-The control law is therefore an inner current PI only, with no outer voltage loop. The role normally played by an outer loop is filled by a set of soft clamps on the current command: a hard limit at plus or minus 0.60A, a linear taper to zero near each voltage limit, and a bus-health taper that reduces charging demand when the bus sags so the cap does not fight the grid for current. The detailed feedforward and anti-runaway treatment of this inner loop is described in Section 4.2.
-
-=== Simulation
+The control law is therefore an inner current PI only, with no outer voltage loop. The role normally played by an outer loop is filled by a set of soft clamps on the current command: a hard limit at plus or minus 0.60A, a linear taper to zero near each voltage limit, and a bus-health taper that reduces charging demand when the bus sags so the cap does not fight the grid for current. 
 
 == Testing & Implementation
 
-Three implementation matters specific to the supercap module are reported here: a power-telemetry sign-convention error discovered during efficiency review, the same layered noise treatment described for the PV module in Section 3.2, and the inner-loop feedforward that keeps the synchronous boost stable.
+Two implementation matters specific to the supercap module are reported here: the same layered noise treatment described for the PV module in Section 3.2 and the inner-loop feedforward that keeps the synchronous boost stable.
 
-=== Power Telemetry Correction
-
-The original $P_("cap")$ telemetry was computed as $V_("cap") dot I_("L")$, mirroring the PV module's pattern of pairing the Port B voltage with the Port B current. On the PV module this gives the correct panel input power because both factors are physically Port B side measurements. On the supercap module, however, the port assignment is reversed: Port A is the cap and Port B is the bus, so the shunt still measures Port B (bus-side) current while $V_("cap")$ is the Port A voltage. The product $V_("cap") dot I_("bus")$ does not equal the bus-input power $V_("bus") dot I_("bus")$, does not equal the cap-side received power $V_("cap") dot I_("cap")$, and does not equal the rate of cap-side stored energy $C dot V_("cap") dot (d V_("cap")) / (d t)$. It is dimensionally a power but does not correspond to any physical port: the sign is correct (positive while charging) but the magnitude differs from the genuine bus-side transfer power by a factor of $V_("cap") / V_("bus")$, which at $V_("cap") = 15$ V and $V_("bus") = 10$ V is 50% over.
-
-The correction was to compute $P_("cap") = V_("bus") dot I_("L")$ with both factors now Port B side, giving the genuine bus-side power flow. The sign convention is preserved: a positive value means current is flowing into the cap (the bus is delivering, so the value represents the pre-loss bus input), a negative value means current is flowing out of the cap (the bus is receiving, so the magnitude represents the post-loss bus output). This dual interpretation is signalled by the sign, so a single telemetry field carries both meanings without ambiguity. The implication for evaluation is that comparing a charging $P_("cap")$ value directly to a discharging $P_("cap")$ value is comparing pre-loss to post-loss, which is informative but must be interpreted carefully when computing efficiencies.
-
-=== Bench Noise Treatment
-
-The same three-layer noise reduction applied to the PV module is replicated here: INA219 averaging bumped from 8 to 16 samples (CONFIG register 0x1DDF to 0x1E67), four-fold ADC oversampling on $V_("cap")$ and $V_("bus")$ reads, and a software EMA with $alpha = 0.05$ on the V and I traces for the display path. The three-second block average uses one additional reset trigger: the averaging window restarts on changes to $I_("cmd")$, enable state, and cycle-test phase. The cycle-test reset is particularly important because the operating point changes within a test (precharge, charge, discharge) while the user-commanded $I_("cmd")$ stays at zero throughout; without the test-phase term in the reset trigger, the three-second average would smear across phases and become meaningless mid-test.
 
 === Inner-Loop Feedforward and Bus-Droop Backoff
 
@@ -496,28 +508,26 @@ The key property of this construction is that no current sensor is required on t
 
 === Cycle Test State Machine
 
-The test is implemented as a state machine inside the supercap firmware, triggered from a single dashboard button. Phases run in sequence: precharge (drive $V_("cap")$ down to $V_("low")$ if currently above), settle 1 (zero current for 500 ms, capture $E_("cap,start")$), charge (constant current at the user-specified $I_("charge")$ up to $V_("high")$), settle 2 (capture $E_("cap,peak")$), discharge (constant current at the user-specified $I_("discharge")$ back to $V_("low")$), settle 3 (capture $E_("cap,end")$), done (compute and expose the three efficiencies). Each settle phase averages $V_("cap")$ over only its last 200 ms, skipping the early-settle ESR voltage relaxation transient. Integration of $E_("in")$ and $E_("out")$ runs at the full 1 kHz control tick rate so the displayed efficiencies are not limited by any external sample rate.
+The test is implemented as a state machine inside the supercap firmware, triggered from a single dashboard button (@fig:cap-state-machine). Phases run in sequence: precharge (drive $V_("cap")$ down to $V_("low")$ if currently above), settle 1 (zero current for 500 ms, capture $E_("cap,start")$), charge (constant current at the user-specified $I_("charge")$ up to $V_("high")$), settle 2 (capture $E_("cap,peak")$), discharge (constant current at the user-specified $I_("discharge")$ back to $V_("low")$), settle 3 (capture $E_("cap,end")$), done (compute and expose the three efficiencies). Each settle phase averages $V_("cap")$ over only its last 200 ms, skipping the early-settle ESR voltage relaxation transient. Integration of $E_("in")$ and $E_("out")$ runs at the full 1 kHz control tick rate so the displayed efficiencies are not limited by any external sample rate.
+
+#figure(
+  image("images/supercap_cycle_state_machine.png", width: 100%),
+  caption: [Supercapacitor cycle-test state machine.],
+) <fig:cap-state-machine>
 
 Three design decisions in the state machine deserve note. First, the endpoint $V_("low") = 10.5$ V was chosen over a tapered-out $V_("low") = 11.0$ V even though the cap's soft-discharge taper between 11.0 V and 10.5 V (introduced for hard-floor safety) means the discharge current is not held constant at the user-specified value across the final 0.5 V. The energy integral correctly captures the tapered region, and $eta_("discharge")$ legitimately reflects performance averaged across the operational window; the alternative would understate the discharge contribution to round-trip loss. Second, the test bypasses the user-i_cmd path and writes 0 into the command dictionary at start, so when the test ends the cap idles cleanly rather than resuming whatever current command was active before. Third, auto-rearm is implemented: after the done phase the firmware returns to normal command mode, allowing the next test to be triggered with a single button click without intermediate reset.
 
-A 60-second per-phase timeout is enforced as a watchdog; any phase exceeding it transitions to an aborted state. Any trip, disable command, or explicit `test_abort` also transitions to aborted with the partial $E_("in")$ and $E_("out")$ values frozen for download.
-
-=== Data Logging
-
-The host dashboard polls the supercap telemetry endpoint at 20 Hz throughout the test, accumulating every sample into a browser-side JavaScript array. Logged fields per row are timestamp, phase, $V_("cap")$, $V_("bus")$, $I_("L")$, instantaneous bus power, running $E_("in")$, running $E_("out")$, instantaneous cap-side energy ($1/2 C V_("cap")^2$, computed in the browser), and the effective current command. At completion the array is serialised into a CSV blob and downloaded through the browser, landing in the user's default Downloads folder.
-
-The decision to log at 20 Hz from the dashboard rather than at the full 1 kHz from firmware was driven by Pico W RAM constraints. A full 60-second test at 1 kHz with ten fields per sample at 8 bytes each would require approximately 4.8 MB, well beyond the Pico W's 264 kB usable RAM; flash logging would be slow and would wear the chip with each test. The 20 Hz dashboard approach off-loads sample retention to the browser, where the limit is effectively browser memory rather than embedded RAM. The energy integrations themselves remain at 1 kHz internally so the displayed efficiency numbers are not limited by the log rate; the 20 Hz CSV is intended for post-experiment visual inspection and plotting, not for the efficiency calculation itself.
 
 === Measured Results
 
-The cycle test was run as two sweeps, each repeated three times: a charge and discharge current sweep at 0.1, 0.2 and 0.3A with the bus held at 10V, and a bus voltage sweep at 8.0, 8.5, 9.0, 9.5 and 10.0V with the current fixed at 0.2A. @fig:cap-cycle shows a representative cycle at the 10V, 0.2A operating point. The capacitor voltage ramps from 10.5V to the 15.7V cutoff over a 19-second charge and back over a 17-second discharge, while the bus-side energy integrals accumulate to $E_("in") = 38.2$ J on charge and $E_("out") = 33.7$ J on discharge. The cap-side energy swing $1/2 C (V_("high")^2 - V_("low")^2) approx 34$ J matches the design estimate.
+The cycle test was run as two sweeps, each repeated three times: a charge and discharge current sweep at 0.1, 0.2, 0.3, 0.4, 0.5 and 0.6 A with the bus held at 10V, and a bus voltage sweep at 8.0, 8.5, 9.0, 9.5 and 10.0V with the current fixed at 0.2A. @fig:cap-cycle shows a representative cycle at the 10V, 0.2A operating point. The capacitor voltage ramps from 10.5V to the 15.7V cutoff over a 19-second charge and back over a 17-second discharge, while the bus-side energy integrals accumulate to $E_("in") = 38.2$ J on charge and $E_("out") = 33.7$ J on discharge. The cap-side energy swing $1/2 C (V_("high")^2 - V_("low")^2) approx 34$ J matches the design estimate.
 
 #figure(
   image("images/supercap_cycle_trace.png", width: 100%),
   caption: [Measured supercapacitor charge and discharge cycle at 10V, 0.2A.],
 ) <fig:cap-cycle>
 
-Round-trip efficiency is reported as $eta_("RT") = E_("out") / E_("in")$, with both energies measured at the bus, so the figure is independent of any cap-side assumption. @fig:cap-eff plots it against current and against bus voltage, showing all three runs per point. The headline result is a round-trip efficiency of approximately 88%, slightly above the conservative 70 to 85% pre-test estimate and stable across the operating range. The dependence on current is weak and slightly negative (89.7% at 0.1A, 88.3% at 0.2A, 88.2% at 0.3A), consistent with conduction loss growing with current. The dependence on bus voltage is weaker still and largely within the run-to-run scatter, with a mild rise toward higher bus voltage (87.3% at 8V to 88.3% at 10V) consistent with the smaller boost ratio, and therefore lower switch stress, when the cap sits closer to the bus.
+Round-trip efficiency is reported as $eta_("RT") = E_("out") / E_("in")$, with both energies measured at the bus, so the figure is independent of any cap-side assumption. @fig:cap-eff plots it against current and against bus voltage, showing all three runs per point. The headline result is a round-trip efficiency of approximately 88%, slightly above the conservative 70 to 85% pre-test estimate and stable across the operating range. The current dependence is weak and slightly negative across the full 0.1 to 0.6 A range (89.7% at 0.1 A falling to 86.9% at 0.5 A, with an 87.4% recovery at 0.6 A inside the run-to-run scatter), consistent with conduction loss growing with current. The bus-voltage dependence is weaker still and largely within run-to-run scatter, with a mild rise toward higher bus voltage (87.3% at 8 V to 88.3% at 10 V), consistent with the smaller boost ratio, and therefore lower switch stress, when the cap sits closer to the bus.
 
 #figure(
   image("images/supercap_efficiency.png", width: 100%),
@@ -525,40 +535,51 @@ Round-trip efficiency is reported as $eta_("RT") = E_("out") / E_("in")$, with b
 ) <fig:cap-eff>
 
 #protable(
-  columns: (auto, auto, auto),
-  align: (left + horizon, center + horizon, center + horizon),
-  [*Sweep*], [*Setpoint*], [*Mean $eta_("RT")$, 3 runs*],
-  [Current at 10V bus], [0.1A], [89.7%],
-  [], [0.2A], [88.3%],
-  [], [0.3A], [88.2%],
-  [Bus voltage at 0.2A], [8.0V], [87.3%],
-  [], [8.5V], [87.7%],
-  [], [9.0V], [87.4%],
-  [], [9.5V], [88.8%],
-  [], [10.0V], [88.3%],
+  caption: [Supercap round-trip efficiency by charge current at 10 V bus.],
+  columns: (1fr, 1fr),
+  align: (center + horizon, center + horizon),
+  [*Charge current*], [*Mean $eta_("RT")$, 3 runs*],
+  [0.1 A], [89.7%],
+  [0.2 A], [88.3%],
+  [0.3 A], [88.2%],
+  [0.4 A], [87.0%],
+  [0.5 A], [86.9%],
+  [0.6 A], [87.4%],
+)
+
+#protable(
+  caption: [Supercap round-trip efficiency by bus voltage at 0.2 A.],
+  columns: (1fr, 1fr),
+  align: (center + horizon, center + horizon),
+  [*Bus voltage*], [*Mean $eta_("RT")$, 3 runs*],
+  [8.0 V], [87.3%],
+  [8.5 V], [87.7%],
+  [9.0 V], [87.4%],
+  [9.5 V], [88.8%],
+  [10.0 V], [88.3%],
 )
 
 The per-phase split into $eta_("charge")$ and $eta_("discharge")$ is deliberately not reported as a headline figure, because the data shows it is unreliable on this bank. The split needs the open-circuit cap energy $1/2 C V^2$ captured at each settle phase, but the supercapacitor's distributed series resistance means the terminal voltage keeps redistributing after the current stops, exactly the effect the brief warns about. The discharge-side split routinely came out above 100%, which is unphysical, because more energy is drawn from the cap on discharge than the post-settle open-circuit voltage implies. Since $eta_("RT") = E_("out") / E_("in")$ is computed entirely from bus-side measurements it is immune to this, and is the figure carried into Section 11. The finding is itself informative: the cap-side voltage is adequate for the state-of-charge display but not for a clean charge versus discharge efficiency split.
 
 The cap cycle test also feeds the future-work automated PV efficiency measurement (Section 3.3): because the bus-side energy delivered into the cap is directly measured, a PV run that charges the cap can be cross-checked against $E_("in")$ without relying on the cap-side split.
 
-=== Extended Current Sweep and Self-Discharge Characterisation
+=== Self-Discharge and Hold-Duration Dependence
 
-After the firmware command clamp was raised from 0.3A to 0.6A (Section 4.2), the current sweep was extended with three runs each at 0.4A, 0.5A and 0.6A. The cycle-test state machine was then extended with a user-controlled zero-current hold phase between charge and discharge, and a hold-duration sweep at 60, 120, 180, 240 and 300 seconds (three runs each, 0.2A charge / discharge) was run to characterise self-discharge. @fig:cap-hold-eff summarises the three sweeps in a common style.
+The cycle-test state machine was extended with a user-controlled zero-current hold phase inserted between charge and discharge, and a hold-duration sweep at 60, 120, 180, 240 and 300 seconds (three runs each, 0.2 A charge and discharge at 10 V bus) was run to characterise self-discharge. @fig:cap-hold-duration shows the resulting drop in round-trip efficiency, and @fig:cap-hold shows the underlying open-circuit relaxation.
 
 #figure(
-  image("images/supercap_hold_efficiency.png", width: 100%),
-  caption: [Round-trip efficiency across the three sweeps. (a) versus charge / discharge current at 10V bus and zero hold, extending the original sweep to 0.6A. (b) versus bus voltage at 0.2A (repeated from Section 4.3, included for direct comparison with the new sweeps). (c) versus hold duration at 0.2A and 10V bus: the cost of parking the cap at high state of charge.],
-) <fig:cap-hold-eff>
+  image("images/supercap_hold_duration.png", width: 90%),
+  caption: [Round-trip efficiency versus zero-current hold duration.],
+) <fig:cap-hold-duration>
 
-Panel (a) shows that $eta_("RT")$ sits in a narrow 87 to 90% band across the full 0.1 to 0.6A range, with a mild downward trend (89.7% at 0.1A to 86.9% at 0.5A) consistent with conduction loss scaling with current, and a small recovery to 87.4% at 0.6A inside the run-to-run scatter. Panel (b) is the bus-voltage sweep, with all five points within a 1.5 percentage-point band. Panel (c) is the new finding: $eta_("RT")$ falls from 88.3% with no hold to 64.1% after 300 seconds of hold at peak charge. The largest single step is the first minute (88.3% to 77.5%); subsequent minutes contribute a roughly linear 3 percentage-points-per-minute slope. Because $eta_("RT") = E_("out") / E_("in")$ is measured entirely at the bus this is real energy lost, not a measurement artefact.
+$eta_("RT")$ falls from 88.3% with no hold to 64.1% after 300 seconds of hold at peak charge. The largest single step is the first minute (88.3% to 77.5%); subsequent minutes contribute a roughly linear 3 percentage-points-per-minute slope. Because $eta_("RT") = E_("out") / E_("in")$ is measured entirely at the bus, this is real energy lost, not a measurement artefact.
 
 #figure(
   image("images/supercap_hold_self_discharge.png", width: 100%),
-  caption: [Master self-discharge curve: median $V_("cap")$ across 13 hold runs at 0.2A. Two regimes are visible: a fast dielectric-absorption component over the first 50 seconds (shaded) followed by slow ohmic leakage. All five tested hold durations collapse onto this one curve, so a single two-time-constant model describes the bank.],
+  caption: [Open-circuit $V_("cap")$ drift after charge: master curve across 13 hold runs.],
 ) <fig:cap-hold>
 
-@fig:cap-hold underpins panel (c) of the efficiency figure. The median $V_("cap")$ traced across all 0.2A hold runs (irrespective of their commanded hold length) collapses onto a single relaxation curve, confirming that one underlying mechanism dominates: a fast component of approximately 0.5V over the first 50 seconds, attributable to dielectric absorption (charge redistribution into deeper dielectric layers, already flagged in Section 4.1 as the reason the cycle test inserts a settle window before each OCV capture), and a slow component of order 2 to 3mV per second thereafter, attributable to ohmic leakage through the dielectric. That all hold lengths produce the same curve means the relaxation can be fit once and reused for any hold the algorithm chooses.
+@fig:cap-hold underpins the efficiency drop. The median $V_("cap")$ traced across all 0.2 A hold runs (irrespective of their commanded hold length) collapses onto a single relaxation curve, confirming that one underlying mechanism dominates: a fast component of approximately 0.5 V over the first 50 seconds, attributable to dielectric absorption (charge redistribution into deeper dielectric layers @jamieson_charge_redistribution_2021, already flagged in Section 4.1 as the reason the cycle test inserts a settle window before each OCV capture), and a slow component of order 2 to 3 mV per second thereafter, attributable to ohmic leakage through the dielectric. That all hold lengths produce the same curve means the relaxation can be fit once and reused for any hold the algorithm chooses.
 
 The implication for the economic dispatch algorithm in Section 11 is direct: the supercap should be charged just-in-time. Even a few minutes of unscheduled hold at peak state of charge materially erodes the round-trip benefit, and slight scheduling slack is cheaper to absorb on the input side (delay charging by a few minutes) than on the output side (charge ahead and let leakage bleed it down).
 
@@ -574,23 +595,26 @@ The implication for the economic dispatch algorithm in Section 11 is direct: the
 
 Both grid-facing modules are configured as synchronous buck converters with the BU/BO switch set to BUCK (the shared power stage is @fig:smps-stage), but their port assignments mirror their opposite roles. The import module places the 12V bench PSU on Port A and the bus on Port B, stepping 12V down to the 10V bus and sourcing current into it; it cannot push current back into the PSU, so its current reference is clamped to non-negative values. The export module places the bus on Port A and a dummy resistor bank on Port B, stepping the bus down into the resistor to dissipate surplus energy; its current reference is likewise clamped non-negative. Both satisfy the Port A above Port B rule by construction.
 
-Because the gate driver on these modules inverts, the buck duty is written as `65536 - pwm_out`, the opposite of the PV and supercap boost convention, and the safe state writes a full-scale duty so the MOSFET is held off. Current is sensed by the shared INA219 driver across the 0.10 ohm Port B shunt. The choice of a dummy resistor as the export sink follows the brief's guidance: driving current into a bench PSU causes its current to collapse and its terminal voltage to rise, so a resistor sized to sink the maximum export current without exceeding its voltage limit is used in place of true reverse feed.
+A natural alternative is one bidirectional module with the 12V PSU and the sink resistor wired in parallel on a single port, eliminating one SMPS. There was a critical issue that ruled this method out. Taking the worst-case 20 W surplus (derived below) without exceeding the 17.5V SMPS port limit requires $R <= 17.5^2 / 20 approx 15$ ohm. At that 15 ohm value, the PSU clamps the shared node at 12V and drives a continuous parasitic dissipation of $12^2 / 15 = 9.6$ W even when the system is idle, roughly half the maximum surplus the converter is being built to handle in the first place. Raising R to cut this loss is no escape either: at 1 kohm the parasitic falls to about 0.14 W but the maximum absorbable export collapses to $17.5^2 / 1000 approx 0.3$ W, three orders of magnitude below the 20 W surplus, and no single fixed R closes the gap. 
 
-The resistance follows from the worst-case exportable surplus. The most the bus could ever need to shed is full photovoltaic harvest plus peak supercapacitor discharge: two panels in parallel supply under 6W, and the supercapacitor at its 17.5V ceiling and 0.76A absolute peak discharge @cd_dsm_datasheet adds about 13W, so the surplus stays under 20W. Because the export converter bucks from the 10V bus, the dissipating voltage cannot exceed the bus, so shedding 20W needs a current of $P / V = 20 / 10 = 2$A and a load of $V / I = 10 / 2 = 5$ ohm. The dummy load is therefore a 5 ohm bank and the inductor-current reference is capped at 2A, the point at which the 10V and 2A limits coincide at the 20W corner, and which sits under the module's 2.8A firmware overcurrent trip.
+The resistance follows from the worst-case exportable surplus. The most the bus could ever need to shed is full irradiance on PV plus peak supercapacitor discharge: two panels in parallel supply under 8W, and the supercapacitor at its 17.5V ceiling and 0.6A average discharge adds about 10.5W, so the surplus stays under 20W. Because the export converter bucks from the 10V bus, the dissipating voltage cannot exceed the bus, so shedding 20W needs a current of $P / V = 20 / 10 = 2$A and a load of $V / I = 10 / 2 = 5$ ohm. The dummy load is therefore a 5 ohm bank and the inductor-current reference is capped at 2A, the point at which the 10V and 2A limits coincide at the 20W corner, and which sits under the module's 2.8A firmware overcurrent trip.
 
 === Droop Setpoints: 9.9 V Import and 10.1 V Export
 
-Each module runs a cascaded controller: an outer bus-voltage PI produces a current reference, and an inner current PI servoes the inductor current to it. The two modules differ only in the sign of the voltage error. The import module computes $v_("err") = V_("target") - V_("bus")$, so it sources more current the further the bus falls below its 9.9V setpoint. The export module computes $v_("err") = V_("bus") - V_("target")$, the sign flipped, so it dissipates more the further the bus rises above its 10.1V setpoint. Each reference is clamped to a non-negative cap of 2.0A on both modules (approximately 20W at the bus), the export value set by the worst-case surplus analysis in Section 5.1.1 and the import value by the grid interface rating.
+Each module runs a cascaded controller: an outer bus-voltage PI produces a current reference, and an inner current PI servoes the inductor current to it (@fig:cascaded-control). The two modules differ only in the sign of the voltage error. The import module computes $v_("err") = V_("target") - V_("bus")$, so it sources more current the further the bus falls below its 9.9V setpoint. The export module computes $v_("err") = V_("bus") - V_("target")$, the sign flipped, so it dissipates more the further the bus rises above its 10.1V setpoint. Each reference is clamped to a non-negative cap of 2.0A on both modules (approximately 20W at the bus), the export value set by the worst-case surplus analysis in Section 5.1.1 and the import value by the grid interface rating.
 
-Placing the import setpoint below the export setpoint creates the 0.2V dead-band from 9.9V to 10.1V in which neither module acts, the mechanism analysed at system level in Section 2.6. A setpoint of 0.1V or below, or a disable command, is treated as fully off, which is how a higher-level scheduler hands the bus entirely to one side. During bring-up a deliberately wider band was used, with the import target lowered and the export target raised, to stay tolerant of untuned loops and residual noise before narrowing to the final 9.9V and 10.1V once the loops were stable.
+#figure(
+  image("images/cascaded_control_block.png", width: 100%),
+  caption: [Cascaded control structure shared by Import and Export SMPS modules.],
+) <fig:cascaded-control>
 
-=== Simulation
+The dead-band that the asymmetric setpoints create is analysed at system level in Section 2.5; what matters here is the implementation. A setpoint of 0.1V or below, or a disable command, is treated as fully off, which is how a higher-level scheduler hands the bus entirely to one side. During bring-up a deliberately wider band was used, with the import target lowered and the export target raised, to stay tolerant of untuned loops and residual noise before narrowing to the final 9.9V and 10.1V once the loops were stable.
 
 == Testing & Implementation
 
 Both bus-facing modules received the same three-layer noise reduction as PV and supercap, applied through a single edit to the shared INA219 driver. Because Import and Export use the common `INA219` class in `common.py` rather than an inline driver, raising the CONFIG word from 0x199F (12-bit, single-sample, 532 us conversion) to 0x1E67 (12-bit, 16-sample averaging, 8.51 ms conversion) inside the class constructor benefited both modules with one change. The four-fold ADC oversample on $V_("PSU")$, $V_("bus")$, $V_("dummy")$ and the software EMA on the V and I traces were duplicated into each module's main loop. Three-second block averages of $P_("import")$ and $P_("dissipated")$ were added with reset triggers on $V_("target")$, $I_("max")$ and enable state, matching the per-module pattern used elsewhere.
 
-The Import module's $P_("import") = V_("bus") dot I_("L")$ telemetry was already correctly formulated: both factors are Port B side measurements on the buck topology, so $P_("import")$ is the genuine bus-side delivered power (post-loss). The Export module's $P_("dissipated") = V_("dummy") dot I_("L")$ similarly represents the genuine dummy-resistor dissipation (post-loss at the export converter output). Neither required the formula correction that the supercap module needed in Section 4.2.
+ 
 
 === Anti-Windup and Soft-Start Grace
 
@@ -602,11 +626,42 @@ A soft-start grace window guards the undervolt trip. When the grid module is the
 
 The import SMPS efficiency is defined as $eta_("import") = P_("bus,delivered") / P_("PSU,drawn")$. The numerator $P_("bus,delivered")$ is the firmware's $P_("import")$ field. The denominator $P_("PSU,drawn") = V_("PSU") dot I_("PSU")$ requires $I_("PSU")$, which is not measured on the import module because the shunt sits on the Port B (bus) side. Unlike the PV case in Section 3.3, however, $I_("PSU")$ is available with no extra instrumentation and no calibration step: the bench PSU's built-in current readout exposes it directly with manufacturer-stated accuracy. The test procedure reduces to "read the three-second-averaged $P_("import")$ off the dashboard, multiply $V_("PSU")$ by the PSU's current reading, take the ratio".
 
-Section 2.3 established that any watt lost in the import path is a watt of grid energy that does not appear on the bus, directly degrading the economic score. Import efficiency therefore deserves disproportionate evaluation attention, and the sweep is correspondingly fine-grained. Bus voltage is commanded at 9.5, 9.7, 9.9 (the steady-state symmetric-droop setpoint) and 10.0 V, sampling the import operating range. Import current is set at 0.5, 1.0, 1.5 and 2.0 A by manipulating the load applied to the bus. At each grid point the three-second-averaged $P_("import")$ is recorded against the steady-state PSU current reading. The expected outcome is a shallow efficiency maximum at moderate current (approximately 1 to 1.5 A) where conduction losses are not yet quadratic-dominant but switching losses are amortised over enough delivered power. At low currents switching losses dominate the fixed cost; at high currents $I^2 R$ losses in the FETs and inductor windings rise faster than delivered power. The result feeds into Section 11.
+Section 2.3 established that any watt lost in the import path is a watt of grid energy that does not appear on the bus, directly degrading the economic score. Import efficiency therefore deserves disproportionate evaluation attention, and the sweep is correspondingly fine-grained. The bus-voltage axis is swept across nine points from 7 V to 11 V in roughly 0.5 V steps, deliberately wider than the 9.9 V to 10.1 V dead-band so the duty-cycle dependency is captured across the full operating range rather than just the cluster around 10 V. The current axis covers 0.1, 0.2 and 0.3 A, set by the outer voltage PI. At each of the 27 grid points the three-second-averaged $P_("import")$ is recorded against the steady-state PSU current reading.
+
+=== Measured Import Efficiency
+
+@fig:import-eta and the table below present the 27-point sweep at $V_("PSU") = 12$ V. Efficiency rises monotonically with both bus voltage and load current. At the nominal $V_("bus") = 10$ V the converter delivers 83.8%, 89.9% and 92.5% at 0.1, 0.2 and 0.3 A respectively; at the high end of the sweep ($V_("bus") approx 11$ V) the same three numbers rise to 84.7%, 91.3% and 93.6%.
+
+#protable(
+  caption: [Measured Import SMPS efficiency by bus voltage and load current.],
+  columns: (1fr, 1fr, 1.2fr, 1.2fr, 1.2fr),
+  align: center + horizon,
+  [*$V_("bus")$ (V)*], [*Duty $D$*], [*$eta$ at 0.1 A*], [*$eta$ at 0.2 A*], [*$eta$ at 0.3 A*],
+  [7.0],  [0.58], [77.8%], [86.9%], [89.3%],
+  [7.5],  [0.62], [79.0%], [87.3%], [90.0%],
+  [8.1],  [0.67], [81.1%], [88.1%], [90.4%],
+  [8.5],  [0.71], [81.7%], [88.4%], [90.8%],
+  [9.0],  [0.75], [82.1%], [88.9%], [91.2%],
+  [9.5],  [0.79], [82.9%], [89.6%], [91.7%],
+  [10.0], [0.83], [83.8%], [89.9%], [92.5%],
+  [10.5], [0.87], [84.2%], [90.6%], [92.7%],
+  [11.0], [0.92], [84.7%], [91.3%], [93.6%],
+)
+
+#figure(
+  image("images/import_efficiency.png", width: 100%),
+  caption: [Measured Import SMPS efficiency versus bus voltage at three load currents.],
+) <fig:import-eta>
+
+Both trends are expected from the buck loss model. The bus-voltage dependence reflects the duty cycle: as $V_("bus")$ rises toward $V_("PSU") = 12$ V the duty $D = V_("bus") / V_("PSU")$ approaches unity, inductor ripple shrinks, and the high-side switch spends more of each cycle conducting against a less-than-quadratic increase in $I^2 R$ loss. The current dependence reflects fixed-overhead amortisation: gate-drive consumption and switching loss are largely independent of load, so they consume a larger fraction of throughput at low current. At 0.1 A the converter delivers only about 1 W to the bus and the fixed overheads dominate; at 0.3 A the delivered power is roughly three times larger and the efficiency rises by 6 to 10 percentage points.
+
+For the system-level optimum this is the strongest argument for a bus voltage above 10 V if other constraints allow. Pushing $V_("bus")$ from 10 V to 11 V at $I_("L") = 0.3$ A buys roughly 1.1 percentage points of import efficiency; combined with the Section 3.3.3 result that PV efficiency is approximately flat with bus voltage, the system efficiency is dominated by import behaviour and tilts toward a higher bus voltage. The decision is left to the dispatch algorithm of Section 9, which weighs this against the supercapacitor's reduced energy-storage headroom at a higher bus (the cap window must stay above the bus).
+
+The current axis here is a preliminary low-current characterisation; the originally planned 0.5 to 2.0 A range, covering the operational current band that the import module will see when serving combined LED demand and cap charging, is scheduled as a follow-up to extend the surface upward.
 
 The Export module is excluded from the efficiency sweep. Per the architectural rationale in Section 2.3, the project supervisor confirmed that demo-day power measurements are taken at the DC bus bar itself, so all losses on the export path between the bus and the dummy resistor are counted as if they were part of the dissipated load; export's role is to remove excess bus energy when bus voltage exceeds the export droop setpoint, and the module is sized for cost and simplicity, not for peak conversion efficiency. The dummy-resistor dissipation $P_("dissipated")$ is still reported in the telemetry for the system-level energy balance check in Section 11, but the conversion loss between bus and dummy is not separately characterised.
 
-This is an experimental simplification specific to the assessed metric, and is acknowledged as a divergence from real-world deployment economics. In a domestic smart-grid context the export path carries electricity sold back to the utility, and conversion losses between the household bus and the grid connection point reduce the homeowner's revenue per unit of surplus generated. A 90% export SMPS efficiency would mean 10% of every surplus watt is dissipated as heat in the converter rather than monetised through the feed-in tariff. A deployed Export SMPS would therefore face the same efficiency pressure as the Import SMPS does in Section 5.3, because every watt lost is a watt of revenue forgone. The decision to optimise Export for cost rather than efficiency is correct for the assessed brief but would not transfer directly to a fielded system; this is flagged as future work alongside the load-side equivalent in Section 6.3.
+The exclusion of both Export and LED Load efficiency from the demo-day score is an experimental simplification specific to the assessed metric and is acknowledged as a divergence from real-world deployment economics. In a domestic smart-grid context both paths matter: Export carries electricity sold back to the utility (conversion losses reduce revenue per surplus watt), and the LED Load sits between the bus and the end-use load (conversion losses force a larger bus draw to deliver the same demand, increasing import cost or decreasing export revenue).
 
 #pagebreak()
 
@@ -629,8 +684,6 @@ The LED load is a triple driver assembly: three independent buck channels (red, 
 
 An LED behaves approximately as a fixed-voltage device, so its power is set by controlling current, which makes a current-controlled inner loop the only sensible drive. The demand from the web server, however, arrives as a power figure, so each channel runs in a commanded-power mode realised through constant current: the demanded power is divided by the measured forward voltage to give a current reference, $i_("ref") = P_("demand") / v_("LED")$, which a per-channel current PI then tracks. The reference is clamped to the channel ratings, 3.0W and 1.05A, and a forward-voltage floor guards the division when a string is dark. When the demanded power for a channel is zero the enable pin is dropped and that channel's PI is reset, preventing the integrator from winding up while the channel is meant to be off.
 
-=== Simulation
-
 == Testing & Implementation
 
 The example driver firmware was reworked to drop its external PID dependency in favour of the same inline PI used across the bidirectional modules, giving one consistent controller idiom throughout the project. The per-channel gains and the duty saturation range differ from the bidirectional modules to suit the 0.33 ohm shunt and the driver's own PWM limits. Safety is per channel: if any channel's current exceeds 1.4 times its rated maximum the firmware latches a trip and records which colour tripped, so a single faulty string is diagnosable from the telemetry rather than presenting as a generic fault.
@@ -639,54 +692,44 @@ Two bring-up aids proved useful. A boot-time diagnostic samples every SPI ADC ch
 
 == Evaluation & Optimisation
 
+Two evaluation axes are reported for the LED Load SMPS: per-channel power-following accuracy, which verifies Requirement 1 quantitatively, and the rationale for not separately characterising conversion efficiency.
+
+=== Power-Following Accuracy
+
+A 60-second scripted tracking test exercises each channel individually and then together, with the commanded and measured per-channel powers logged off the dashboard at 20 Hz. @fig:led-tracking overlays the two: the faint trace is the commanded power and the dark trace the measured power delivered to the LED string. The sequence is red at 2 W for 6 s, off, yellow at 2 W for 6 s, off, blue at 2 W for 6 s, off, all three together at 1, 2 and 3 W for 10 s, off, and a 15-second simultaneous ramp from 0 to 3 W on all three channels.
+
+#figure(
+  image("images/led_power_tracking.png", width: 100%),
+  caption: [Per-channel commanded and measured LED power across the 60-second tracking sequence.],
+) <fig:led-tracking>
+
+Each channel tracks its command within approximately ±3% across all operating points, with the residual driven by per-string forward-voltage variation that the $i_("ref") = P_("demand") / v_("LED")$ division (Section 6.1.2) leaves uncompensated when $v_("LED")$ is itself estimated through the SPI ADC chain. Step settling on each on or off transition resolves inside a single 50 ms dashboard sample. The all-on and ramp phases confirm that channels do not interact through the shared bus or shared SPI ADC, so a multi-colour LED demand is served additively without cross-channel disturbance.
+
+=== Efficiency Exclusion
+
 The LED Load SMPS conversion efficiency is not separately characterised. Per the architectural rationale in Section 2.3 and confirmed directly by the project supervisor, the demo-day power measurements occur at the DC bus bar itself, so any loss occurring between the bus and the LED string is counted on the bus side as load consumption rather than as a deduction from the score. The metric therefore treats LED Load SMPS losses as if they were additional LED dissipation, and there is no scoring benefit to driving LED Load SMPS efficiency above whatever the simplest competent design delivers. The module is sized for cost, current capability and PI robustness rather than peak efficiency, on the same logic that excludes the Export SMPS in Section 5.3.
 
-This is an experimental simplification specific to the assessed metric and is acknowledged as a divergence from real-world deployment economics. In a domestic smart-grid context the LED Load SMPS sits on the path between the household DC bus and the actual end-use load (lighting, heating, appliances), so any conversion loss on this path reduces the effective usable power delivered to the homeowner. A 90% LED Load SMPS efficiency would mean that for every kilowatt-hour drawn at the bus, only 0.9 kilowatt-hour reaches the end use, with the remainder dissipated as heat inside the converter. The homeowner would then have to draw more power from the bus to achieve the same usable output, and therefore more from the grid during net-consumption periods. In an active smart-grid economic optimisation this manifests as either decreased revenue when the household is net-exporting (because some local generation goes to converter heating rather than to the grid) or increased import cost when the household is net-consuming (because some imported energy goes to converter heating rather than to the end use), scaled in both cases by one minus the load-side conversion efficiency.
-
-The decision to leave LED Load SMPS efficiency uncharacterised is therefore correct for the assessed brief but represents a known gap relative to a fielded system. Future work, alongside the Export SMPS equivalent flagged in Section 5.3, would include a DMM-instrumented LED Load efficiency sweep across the relevant operating range (LED current and bus voltage), feeding into a refined economic model where the load-side conversion loss enters as a multiplicative penalty on every imported and self-consumed watt.
+The real-world deployment implications of leaving the LED Load (and Export) path uncharacterised, and the corresponding future-work efficiency sweep, are discussed alongside the Export equivalent in Section 5.3.
 
 #pagebreak()
 
 
-// ----- 7. Sensing & Telemetry (~500 words) -------------------
-= Sensing & Telemetry
-
-== INA219 vs SPI ADC Trade-off
-
-The system uses two current-sensing platforms plus a light sensor, each matched to its module. The four bidirectional modules (PV, grid, export, supercap) sense current with an INA219 over I2C across a 0.10 ohm shunt on the Port B positive line. The INA219 suits these modules because their current is genuinely bidirectional, the charge and discharge of the cap and the import and export of the grid all require a signed reading, and because its programmable internal averaging and dedicated 16-bit shunt path give a quiet current signal without consuming Pico ADC channels. The calibration register is deliberately left at zero: rather than trust the chip's internal current scaling, the firmware reads the raw shunt voltage and divides by the known shunt resistance itself, which keeps the current scale traceable to a single resistor value.
-
-The triple LED driver instead inherits an external SPI ADC of the MCP3208 family from the lab reference design, reading three current and three voltage channels across a 0.33 ohm shunt. The LED current only ever flows one way, so the simpler unidirectional ADC is sufficient, and using SPI keeps the three channels independent and the I2C bus free. Finally, irradiance is measured by a light-dependent resistor on a separate ESP32 module, added because all three Pico ADC pins on the bidirectional boards are already committed to on-board signals. Bus and port voltages on every module are read through the Pico's own ADC via a resistive divider, independent of whichever current sensor the module uses. @fig:smps-control shows the controller interface common to the bidirectional modules: the BU/BO switch that selects which port feeds the support-rail regulator, the I2C link to the INA219, the divided Port A and Port B reads on the Pico ADC, and the PWM path through a deadtime generator and gate driver to the two MOSFETs.
-
-#figure(
-  image("images/smps_control_diagram.png", width: 100%),
-  caption: [Pico controller, sensing and gate-drive interface for the bidirectional SMPS @clemow_control.],
-) <fig:smps-control>
-
-== Calibration
-
-Voltage readings are scaled by the resistive divider ratio and the 3.3V ADC reference, of the form $V = (12490 / 2490) dot 3.3 dot ("raw" / 65536)$. Small per-channel trim factors near unity (1.017 and 1.015 on the PV and supercap reads) were applied to null residual divider and reference error measured against a bench multimeter. Current calibration on the bidirectional modules reduces to the single shunt value of 0.10 ohm, since the INA219 calibration register is zeroed and the shunt voltage is converted in firmware; the PGA is set for a plus or minus 320mV shunt range, which across the 0.10 ohm shunt gives a current measurement ceiling of plus or minus 3.2A. The firmware overcurrent trip is placed at 2.8A, just inside this ceiling so that it fires on a valid reading rather than a saturated one, and well under the module's 5A board rating. The LED driver uses its own 2.497V ADC reference and the $i_("L") = 3 dot V_("shunt")$ scaling for the 0.33 ohm shunt.
-
-The irradiance sensor uses a two-point calibration captured from the dashboard: one reading with the lamp off sets the dark point and one at full brightness sets the bright point, and the LDR voltage is then mapped linearly to an irradiance fraction. The two points are persisted in the ESP32's non-volatile storage so the calibration survives a reboot.
-
-== Filtering & Loop-rate Impact
+// ----- 7. Telemetry Filtering (~700 words) -------------------
+= Telemetry Filtering
 
 Noise on the per-module power telemetry was severe enough at first bring-up to obscure the operating-point comparisons that Section 3.3, Section 4.3 and Section 5.3 depend on. Typical jitter on $P_("panel")$ was several hundred milliwatts peak-to-peak against a steady-state mean of a few watts, with similar relative magnitudes on the other modules. The fix is a three-layer attenuation applied identically across the PV, supercap, import and export modules; it is documented once here and referenced by each per-module section.
 
-=== Layer 1: INA219 Internal Averaging
+== Hardware Averaging
 
-The bidirectional template inherits an INA219 CONFIG register of 0x199F, decoded against the datasheet as: BRNG = 0 (16 V bus range), PG = 11 (shunt PGA at ±320 mV full scale), BADC = SADC = 0011 (12-bit, single sample, 532 us conversion), MODE = 111 (continuous shunt and bus). The single-sample 12-bit conversion lets a substantial fraction of switching ripple through unaveraged, particularly on the shunt channel where ripple amplitude is largest. The reprogrammed value 0x1E67 keeps every field identical except BADC and SADC, which are stepped from "single sample" to "16 samples, 8.51 ms". Conversion time rises sixteen-fold but remains an order of magnitude below the slowest downstream consumer (the supercap cycle test's 200 ms OCV averaging window, Section 4.3), so the additional latency is invisible.
+The bidirectional template inherits an INA219 CONFIG register of 0x199F (12-bit, single-sample, 532 us conversion @ti_ina219), which lets a substantial fraction of switching ripple through unaveraged, particularly on the shunt channel where ripple amplitude is largest. Reprogramming to 0x1E67 (16-sample averaging, 8.51 ms conversion) across all four bidirectional modules removes the dominant current-channel noise; conversion time rises but stays an order of magnitude below the slowest downstream consumer (the supercap cycle test's 200 ms OCV averaging window, Section 4.3), so the latency is invisible. The change benefited PV and supercap through identical edits to their inline `ina_init` functions and import and export through a single edit to the shared `INA219` class.
 
-The change benefited supercap and PV through identical edits to their inline `ina_init` functions, and import and export through a single edit to the `INA219` class constructor in `common.py`. No code outside the driver had to change, because the I2C reads return the post-averaged value transparently.
-
-=== Layer 2: Pico ADC Oversample
-
-The Pico W's onboard 12-bit ADC walks several LSBs sample-to-sample on the divider-scaled bus and panel voltage channels, dominating the noise on those channels even after the INA219 fix (which only affects the current channel). Each `read_va` and `read_vb` therefore performs four single reads in sequence and right-shifts the accumulated sum by two to obtain the mean:
+Voltage channels are read by the Pico's onboard 12-bit ADC through a resistive divider and walk several LSBs sample-to-sample regardless of the INA219 setting. Each `read_va` and `read_vb` call therefore performs four single reads and right-shifts the accumulated sum by two to take the mean:
 
 $ V_("oversampled") = (V[0] + V[1] + V[2] + V[3]) / 4 $
 
-Cost per call is approximately 10 us, well inside the 1 ms control tick budget. The mean reduces the ADC noise contribution by a factor of two on the assumption of independent samples; with the residual driven by correlated low-frequency drift rather than independent white noise, the practical reduction is closer to a factor of 1.6 in observed peak-to-peak jitter. Increasing oversample beyond four shows diminishing returns and starts to eat into the tick budget; four was chosen as the conservative point.
+Cost per call is approximately 10 us, well inside the 1 ms control tick budget. Observed peak-to-peak jitter falls by roughly a factor of 1.6, with diminishing returns past four samples.
 
-=== Layer 3: Exponential Moving Average
+== Exponential Moving Average
 
 A first-order EMA is applied in software on top of the hardware-averaged readings:
 
@@ -699,21 +742,26 @@ with $alpha = 0.05$ at the 1 kHz sample rate, equivalent to a time constant $tau
   caption: [Telemetry EMA magnitude and step response at alpha = 0.05.],
 ) <fig:ema-response>
 
-The filter is initialised to the first sample at boot via a "kick start" branch, avoiding a 60 ms ramp-from-zero on the displayed values at startup.
+A critical design decision is that the inner PI loops and the safety guards continue to consume the raw single-sample readings, not the filtered values. Two reasons. First, introducing a 20 ms phase lag into a current PI tuned against unfiltered inputs would shift its stability margin and require retuning. Second, the trip thresholds in each module (panel undervolt, bus overvolt, overcurrent) were designed for instantaneous response; a filtered safety guard would react with a 20 ms delay, slow enough to allow more energy to flow into a fault before tripping. Keeping the filter strictly on the display and characterisation paths preserves both control-loop behaviour and trip response while still giving the operator clean numbers to read.
 
-A critical design decision is that the inner PI loops and the safety guards continue to consume the raw single-sample readings, not the filtered values. Two reasons. First, introducing a 20 ms phase lag into a current PI tuned against unfiltered inputs would shift its stability margin and require retuning. Second, the trip thresholds in each module (panel undervolt, bus overvolt, overcurrent) were designed for instantaneous response; a filtered safety guard would react with a 20 ms delay, which is fast enough to be invisible to a human operator but slow enough to allow more energy to flow into a fault before tripping. Keeping the filter strictly on the display and characterisation paths preserves both control-loop behaviour and trip response while still giving the operator clean numbers to read.
-
-=== Three-Second Block Average
+== Three-Second Block Average
 
 Each module computes a true block average of its bus-side power over a three-second window in firmware:
 
 $ P_("avg3s") = (1 / N) sum_(i=1)^(N) P[i] $
 
-with $N = 3000$ at 1 kHz. The window restarts on changes to the module's commanded operating point (MPPT mode for PV, $I_("cmd")$ for supercap, $V_("target")$ and $I_("max")$ for import), so each completed average reflects a single operating point. Float-rounding the operating-point tuple before comparison (`round(value, 3)` or `round(value, 2)` depending on field) avoids spurious resets from JSON-parser dust. The completed average is what the operator reads from the dashboard during the side-by-side comparisons in Section 3.3 and Section 5.3.
-
-The three-second window is short enough that operators wait only briefly between commanded changes, and long enough that filter noise and switching ripple average out to a stable number. Inside the supercap cycle test the same three-second average sits on top of the cycle phase changes (which are themselves on the timescale of seconds to tens of seconds), so it provides a useful real-time sanity check that the cycle's commanded current has actually settled.
+with $N = 3000$ at 1 kHz. The window restarts on changes to the module's commanded operating point (MPPT mode for PV, $I_("cmd")$ for supercap, $V_("target")$ and $I_("max")$ for import), so each completed average reflects a single operating point. Float-rounding the operating-point tuple before comparison avoids spurious resets from JSON-parser dust. The completed average is what the operator reads from the dashboard during the side-by-side comparisons in Section 3.3 and Section 5.3, and it sits on top of the cycle phase changes inside the supercap cycle test as a real-time sanity check that the commanded current has settled.
 
 == Evaluation
+
+The combined three-layer treatment is evaluated by the noise reduction it delivers on the per-module bus-side power telemetry. @fig:noise-raw-filt overlays a representative raw single-sample trace against the same operating point after the three-layer filter, with the absolute level shifted to a 2 W PV operating point for visual context.
+
+#figure(
+  image("images/noise_raw_vs_filtered.png", width: 100%),
+  caption: [Bus-side power telemetry: raw single-sample versus three-layer filtered.],
+) <fig:noise-raw-filt>
+
+Raw $P_("panel")$ jitter falls from approximately 300 mW peak-to-peak at the 1 kHz tick to under 10 mW per P&O dwell-averaged comparison (Section 3.2), roughly a 30 to 1 reduction. Equivalent attenuation on the supercap, import and export modules brings the three-second-averaged power readings inside a few milliwatts of run-to-run reproducibility, fine enough to resolve the 1.4 percentage-point irradiance-to-irradiance spread in the PV efficiency sweep (Section 3.3) and the 1 to 2 percentage-point steps between adjacent supercap charge currents in the round-trip sweep (Section 4.3).
 
 #pagebreak()
 
@@ -731,15 +779,22 @@ The middle tier is a Python backend built on FastAPI with a SQLite store. A poll
 
 The top tier is a React single-page application built with Vite. It polls the backend on a short interval, keeps a client-side rolling history of recent samples per module, and renders three operator views.
 
+#figure(
+  image("images/ui_stack_architecture.png", width: 100%),
+  caption: [User interface stack with independent telemetry and command paths.],
+) <fig:ui-stack>
+
+@fig:ui-stack summarises the stack and the two independent data paths discussed in Section 8.3: telemetry flows bottom-up through the backend, while commands go straight from the browser to each module, bypassing the backend so a backend or database outage never blocks operator control.
+
 == Operator Views
 
 The default My Energy view is a consumer-facing dashboard styled after a domestic energy provider. It presents the live grid state as demand and irradiance bar charts, a module status grid that flags each module as online, stale, tripped, on watchdog, or disabled, the current buy and sell prices, and the deferrable-load list rendered as progress bars showing each job's window and time remaining. The SMPS Overview view plots per-module telemetry histories (panel, bus, capacitor and load voltages, currents and powers) as line charts drawn from the stored snapshots. The SMPS Modules view is the engineering control surface: one card per module showing its live statistics, a mini history chart, a status pill, and a control panel tailored to that module's role.
 
-The control panels expose exactly the commands each module understands. The PV card switches between fixed, web-lookup and Perturb-and-Observe MPPT and sets a manual maximum-power voltage. The grid and export cards set the bus target and current cap and toggle the module off by setting a zero target. The supercap card offers a signed current slider with charge, discharge and stop shortcuts, and triggers the self-contained efficiency cycle test. The LED card sets per-channel power demands, and the irradiance sensor card runs the two-point calibration. Every card carries enable, disable and reset-trip controls.
+The control panels expose exactly the commands each module understands. The PV card switches between fixed, web-lookup and Perturb-and-Observe MPPT and sets a manual maximum-power voltage. The grid and export cards set the bus target and current cap and toggle the module off by setting a zero target. The supercap card offers a signed current slider with charge, discharge and stop shortcuts, and triggers the self-contained efficiency cycle test. The LED card sets per-channel power demands. Every card carries enable, disable and reset-trip controls.
 
 == Control and Telemetry Paths
 
-A deliberate design choice is that the control path and the telemetry path are independent. Telemetry flows up through the backend and database, but commands are sent straight from the browser to each module's own command endpoint, using the permissive cross-origin policy the firmware sets for this purpose. The two paths therefore share no single point of failure: if the backend or database is down the operator can still command modules directly, and if a module's command endpoint is unreachable the rest of the system keeps reporting. Combined with the firmware watchdog, which forces a module to safe defaults if commands stop arriving, this keeps the interface advisory rather than safety-critical, consistent with the coordination philosophy of Section 2.6.
+A deliberate design choice is that the control path and the telemetry path are independent. Telemetry flows up through the backend and database, but commands are sent straight from the browser to each module's own command endpoint, using the permissive cross-origin policy the firmware sets for this purpose. The two paths therefore share no single point of failure: if the backend or database is down the operator can still command modules directly, and if a module's command endpoint is unreachable the rest of the system keeps reporting. Combined with the firmware watchdog, which forces a module to safe defaults if commands stop arriving, this keeps the interface advisory rather than safety-critical, consistent with the coordination philosophy of Section 2.5.
 
 == On-Module Fallback Dashboard
 
@@ -754,6 +809,8 @@ As a final redundancy a complete single-file dashboard is bundled into the firmw
 This section covers the system-level coordinator that turns the acquired price, demand and irradiance signals into dispatch decisions across the modules. The per-module control loops of Sections 3 to 6 and the data-acquisition pipeline of Section 8 are complete; the economic decision policy that sits on top of them is the project's principal remaining work ahead of demo day, so the subsections below state the problem the coordinator must solve and the fault model it inherits, and leave the decision policy and its evaluation to be reported once implemented.
 
 == Master Loop & Timing Budget
+
+The coordinator runs as a 1 Hz outer loop on the host, two orders of magnitude slower than the 1 kHz inner control tick on each module. Each tick the coordinator polls every module's telemetry endpoint and the live price, demand and irradiance feeds, evaluates the decision policy of Section 9.3, and posts updated current and power setpoints back to each module's command endpoint. The 1 Hz cadence is matched to the timescale of the economically relevant variables (prices update at most minutely; irradiance drifts on tens of seconds; demand on seconds to minutes) and intentionally decoupled from the per-module loops, so a coordinator stall cannot destabilise the bus: local droop, watchdogs and PI controllers continue to run autonomously. The same decoupling lets coordinator development proceed in parallel with bench work on the modules.
 
 == Economic Model
 
@@ -785,7 +842,19 @@ Because the coordinator is advisory rather than safety-critical (Section 2.6), s
 
 == 3D-Modelled SMPS Enclosure
 
-The four bidirectional SMPS boards and the triple LED driver were housed in a 3D-printed chassis rather than left as loose boards on the bench. The enclosure fixes each board in a defined position with spacing for airflow between the converters, protects the exposed power electronics from accidental shorts during handling, and gives the assembly a single rigid form that can be moved and demonstrated without disturbing the wiring. Positioning the boards deliberately also keeps each module's sensing and PWM wiring short and consistent, which matters for the noise behaviour discussed in Section 7.
+The four bidirectional SMPS boards were housed in a 3D-printed chassis rather than left as loose boards on the bench. The enclosure fixes each board in a defined position with spacing for airflow between the converters, also giving the assembly a single rigid form that can be moved and demonstrated without disturbing the wiring. 
+
+The chassis went through one revision driven by thermal observations on the bench. The v1 print packed the SMPS slots tightly to minimise footprint, but extended usage showed the inter-slot gap was too narrow to support adequate passive convection, with risk of board overheating. The v2 revision in @fig:smps-stand widened the gap between adjacent SMPS slots and added through-holes on the side walls to restore a clear convective path through and around each board. 
+
+#figure(
+  grid(
+    columns: (1fr, 1fr),
+    column-gutter: 10pt,
+    image("images/smps_stand_before.png", width: 100%),
+    image("images/smps_stand_after.png", width: 100%),
+  ),
+  caption: [SMPS stand iteration: v1 (left) and v2 (right)],
+) <fig:smps-stand>
 
 == Cable Management and Connector Choice
 
@@ -799,17 +868,17 @@ Power interconnects use 4mm banana leads into the shared DC busbar, the connecto
 
 == Test Scenarios
 
-System-level evaluation comprises three categories of test: per-module SMPS efficiency characterisations (the headline numbers reported here), bus-stability scenarios that exercise the multi-module droop interactions defined in Section 2, and full demo-day economic-dispatch dry runs against scripted price-and-irradiance profiles. The first category is described in this section; the second and third are introduced in Section 9.
+System-level evaluation comprises two categories of test: per-module SMPS efficiency characterisations (the headline numbers reported here), and full demo-day economic-dispatch dry runs against scripted price-and-irradiance profiles. The first is described in this section; the second is introduced in Section 9.
 
 === Per-Module Efficiency Sweeps
 
 Each SMPS module is characterised across a small grid of operating points, with the test method tailored to the instrumentation available on that module's port assignment. The three methods are summarised below; full details for each are in the relevant per-module evaluation subsection.
 
-PV SMPS (Section 3.3): manual measurement using a DMM placed in series with the PV-to-bus wire. The pre-loss panel power $P_("panel,in")$ is available directly from the firmware (both factors are Port B); the post-loss bus power $P_("bus,out")$ requires the external DMM because Port A is uninstrumented. The bus-voltage axis is swept across seven points from 7.1 to 10.2 V in 0.5 V steps, deliberately wider than the import/export dead-band to capture the full duty-cycle response; this axis is complete at 100% irradiance and gives a mean conversion efficiency of 97.3% across the operating range (Section 3.3.3). The 25%, 50% and 75% lab-dimmer settings are scheduled for the next test session and will close out the irradiance axis.
+PV SMPS (Section 3.3): manual measurement using a DMM placed in series with the PV-to-bus wire. The pre-loss panel power $P_("panel,in")$ is available directly from the firmware (both factors are Port B); the post-loss bus power $P_("bus,out")$ requires the external DMM because Port A is uninstrumented. Both axes are complete: twelve bus-voltage points from 7.1 to 12.55 V at each of four irradiance settings (25%, 50%, 75%, 100%), 48 measurements total. The four irradiance curves give means of 96.5%, 96.7%, 97.0% and 97.9% rising monotonically with irradiance, and are flat with bus voltage to within ±0.3%.
 
-Supercap SMPS (Section 4.3): fully automated cycle test triggered from the host dashboard. The test integrates bus-side $E_("in")$ and $E_("out")$ at the 1 kHz tick and reports the round-trip efficiency $eta_("RT") = E_("out") / E_("in")$ from a single charge and discharge cycle. The sweep covers charge and discharge current at three levels (0.1, 0.2, 0.3 A) at a 10V bus, and bus voltage at five levels (8.0 to 10.0 V) at 0.2 A. The measured round-trip efficiency is approximately 88%.
+Supercap SMPS (Section 4.3): fully automated cycle test triggered from the host dashboard. The test integrates bus-side $E_("in")$ and $E_("out")$ at the 1 kHz tick and reports the round-trip efficiency $eta_("RT") = E_("out") / E_("in")$ from a single charge and discharge cycle. The sweep covers charge and discharge current at six levels (0.1 to 0.6 A in 0.1 A steps) at a 10V bus, bus voltage at five levels (8.0 to 10.0 V) at 0.2 A, and hold duration at six levels (0 to 300 s) at 0.2 A. The measured round-trip efficiency is approximately 88% with no hold, falling to 64% after a 300 s hold at peak charge.
 
-Import SMPS (Section 5.3): manual measurement using the bench PSU's built-in current readout for the pre-loss $P_("PSU,drawn")$ side; the post-loss $P_("bus,delivered")$ is available from the firmware. Sweep is bus voltage at four points and import current at four points.
+Import SMPS (Section 5.3): manual measurement using the bench PSU's built-in current readout for the pre-loss $P_("PSU,drawn")$ side; the post-loss $P_("bus,delivered")$ is available from the firmware. Bus voltage is swept across nine points from 7 V to 11 V in 0.5 V steps; current is set at 0.1, 0.2 and 0.3 A by the outer voltage PI. The 27-point grid is complete and gives $eta_("import")$ rising monotonically from 77.8% (low current, low bus) to 93.6% (high current, high bus), with 83.8%, 89.9% and 92.5% at the nominal $V_("bus") = 10$ V at 0.1, 0.2 and 0.3 A respectively. A 0.5 to 2.0 A current extension is scheduled to characterise the operational current band.
 
 Export SMPS is not characterised for efficiency because its losses occur between the bus and the dummy resistor and are not counted by the demo-day metric (Section 2.3).
 
@@ -817,7 +886,7 @@ Export SMPS is not characterised for efficiency because its losses occur between
 
 The headline metrics extracted from the efficiency sweeps are tabulated below. Each entry is a ratio of post-loss output power to pre-loss input power, averaged over the relevant operating window. For the supercap, the round-trip efficiency is reported per operating point, the per-phase charge and discharge split being confounded by the cap's charge redistribution (Section 4.3). For PV and import, a single number is reported per operating point. All numbers are accompanied by their operating point (bus voltage, current, irradiance) and by the underlying $P_("in")$ and $P_("out")$ raw readings so the ratios can be audited.
 
-In addition to the SMPS efficiency table, two derived system-level metrics are reported. The first is the steady-state bus voltage error against the 10 V nominal under each of the Section 11 test scenarios, measured against the ±0.1 V droop budget defined in Section 2.3. The second is the energy balance closure across the bus for full-cycle scenarios:
+In addition to the SMPS efficiency table, two derived system-level checks are reported. First, the steady-state bus voltage. Observed at idle, the bus holds within approximately ±0.05 V of the 10 V nominal, comfortably inside the ±0.1 V droop deadband defined in Section 2.3, which is sized as a safety margin against transient sag and disturbance rejection rather than for steady-state regulation. Second, the energy balance closure across the bus for full-cycle scenarios:
 
 $ E_("PV,bus") + E_("import,bus") = E_("export,bus") + E_("LED,bus") + E_("supercap,bus") + E_("losses,bus") $
 
@@ -828,13 +897,14 @@ The unmodelled $E_("losses,bus")$ residual captures bus-wire $I^2 R$ and any unc
 Each of the brief's six requirements is mapped below to the subsystem that realises it, the test that verifies it, and its current status. Requirement 5, the economic dispatch algorithm, is the principal item still in progress (Section 9); the remainder are implemented and verified by the tests described in the cited sections.
 
 #protable(
-  columns: (auto, 2fr, 1.4fr, 1.5fr, 1.2fr),
+  caption: [Brief requirements: verification method and current status.],
+  columns: (0.5fr, 2fr, 1.4fr, 1.5fr, 1.4fr),
   align: (center + horizon, left + horizon, left + horizon, left + horizon, left + horizon),
   [*Req*], [*Requirement*], [*Realised by*], [*Verification*], [*Status*],
-  [1], [Supply domestic LEDs per web demand], [LED Load SMPS (Section 6)], [CC power-following; demand poll], [Implemented],
-  [2], [Extract PV energy with MPPT], [PV SMPS (Section 3)], [MPPT mode comparison; efficiency sweep], [Implemented],
+  [1], [Supply domestic LEDs per web demand], [LED Load SMPS (Section 6)], [Power-tracking test (Section 6.3)], [Implemented; tracking within ±3% across channels],
+  [2], [Extract PV energy with MPPT], [PV SMPS (Section 3)], [MPPT mode comparison; efficiency sweep], [Efficiency sweep complete; MPPT comparison scheduled],
   [3], [Store excess in supercap, no batteries], [Supercap SMPS (Section 4)], [Cycle test; round-trip efficiency], [Implemented],
-  [4], [Import and export to grid, metered], [Import/Export SMPS (Section 5)], [Import efficiency sweep; bus dead-band], [Metering done; costing via Section 9],
+  [4], [Import and export to grid, metered], [Import/Export SMPS (Section 5)], [Import efficiency sweep; bus dead-band], [Implemented; 0.5 to 2.0A current extension scheduled],
   [5], [Minimise cost; schedule storage and deferrables; beat naive], [Algorithm (Section 9)], [Dry run versus naive baseline], [In progress],
   [6], [UI for current and historic energy data], [User Interface (Section 8)], [Live dashboard; telemetry plots], [Implemented],
 )
@@ -845,7 +915,7 @@ Each of the brief's six requirements is mapped below to the subsystem that reali
 // ----- 12. Conclusion (~150 words) ---------------------------
 = Conclusion
 
-The project delivered a five-module DC microgrid that regulates a shared 10V bus across PV generation, supercapacitor storage, a bidirectional grid interface and a programmable LED load. The two grid-facing converters coordinate the bus through symmetric droop with a 0.2V dead-band, holding the bus stiff without a central coordinator and degrading gracefully under communication loss. The PV module runs selectable lookup-table and Perturb-and-Observe MPPT; the supercapacitor is a command-driven store with a self-contained cycle test that returns round-trip efficiency from a single voltage measurement; the LED load follows commanded power through constant current. A three-layer telemetry filter chain made per-module power measurements quiet enough to characterise, and a self-coded React and FastAPI interface provides both monitoring and control with independent telemetry and command paths. The principal remaining work before demo day on 18 June 2026 is the economic dispatch algorithm that turns the acquired price and demand signals into cost-minimising decisions.
+The project delivered a five-module DC microgrid that regulates a shared 10V bus across PV generation, supercapacitor storage, a bidirectional grid interface and a programmable LED load. The two grid-facing converters coordinate the bus through symmetric droop with a 0.2V dead-band, holding the bus inside ±0.05V of nominal without a central coordinator and degrading gracefully under communication loss. The PV module reaches 96 to 98% conversion across irradiance and bus voltage under selectable lookup-table and P&O MPPT; the import converter spans 78 to 94% across its operating sweep; the supercapacitor is a command-driven store with a self-contained cycle test that returns approximately 88% round-trip efficiency from bus-side energy alone; the LED load follows commanded power through constant current with per-channel tracking inside ±3%. A three-layer telemetry filter chain attenuated raw bus-side power jitter by roughly 30 to 1, and a self-coded React and FastAPI interface provides monitoring and control on independent paths so a backend outage does not block operator action. The principal remaining work before demo day on 18 June 2026 is the economic dispatch algorithm that turns the acquired price and demand signals into cost-minimising decisions.
 
 // ============================================================
 //  References

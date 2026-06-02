@@ -62,7 +62,7 @@ function getModuleStatus(module) {
   if (Date.now() - t > STALE_AFTER_MS) return "stale";
   if (module.trip) return "trip";
   if (module.wd) return "watchdog";
-  if (module.role !== "lux" && !module.enable) return "disabled";
+  if (!module.enable) return "disabled";
 
   return "online";
 }

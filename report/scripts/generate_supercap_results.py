@@ -1,16 +1,15 @@
 """
-Supercapacitor cycle-test results (Section 4.3).
+Representative supercapacitor cycle trace (Section 4.3).
 
 Reads the measured cycle-test logs in report/data/ (one CSV per run, named
-cap<bus>V<current>A(<run>).csv) and produces:
+cap<bus>V<current>A(<run>).csv) and renders the representative 10 V / 0.2 A
+charge-and-discharge cycle as:
 
-  images/supercap_cycle_trace.png  - one representative charge/discharge cycle
-  images/supercap_efficiency.png   - round-trip efficiency vs current and vs bus voltage
+  images/supercap_cycle_trace.png
 
-Round-trip efficiency is taken as eta_RT = E_out / E_in, both bus-side energies
-integrated at 1 kHz in firmware. This avoids the cap-side OCV split (eta_charge /
-eta_discharge), which the data shows is confounded by the supercapacitor's charge
-redistribution (the discharge OCV split can exceed 100%).
+The efficiency sweeps (current, bus voltage, hold duration) are produced by
+generate_supercap_hold_analysis.py from the extended dataset under
+report/data/hold/.
 
 Run:
     python scripts/generate_supercap_results.py
@@ -39,8 +38,10 @@ def load():
         bus, cur, run = float(m.group(1)), float(m.group(2)), int(m.group(3))
         with open(path, newline="") as f:
             rows = [r for r in csv.DictReader(f)]
+
         def col(key):
             return np.array([float(r[key]) for r in rows])
+
         E_in  = col("E_in_J").max()
         E_out = col("E_out_J").max()
         runs.append({
@@ -51,31 +52,11 @@ def load():
     return runs
 
 
-def grouped(runs, fixed_key, fixed_val, var_key):
-    """Return {var_val: [eta, ...]} for runs where fixed_key == fixed_val."""
-    out = {}
-    for r in runs:
-        if abs(r[fixed_key] - fixed_val) < 1e-6:
-            out.setdefault(r[var_key], []).append(r["eta"])
-    return dict(sorted(out.items()))
-
-
 runs = load()
-
-# ---- console summary ----
-print(f"{'bus':>5} {'I':>5} {'run':>3} {'E_in':>7} {'E_out':>7} {'eta_RT':>7}")
-for r in sorted(runs, key=lambda x: (x["bus"], x["cur"], x["run"])):
-    print(f"{r['bus']:5.1f} {r['cur']:5.2f} {r['run']:3d} "
-          f"{r['E_in']:7.2f} {r['E_out']:7.2f} {100*r['eta']:6.1f}%")
-
-cur_sweep = grouped(runs, "bus", 10.0, "cur")     # at 10 V
-bus_sweep = grouped(runs, "cur", 0.2, "bus")      # at 0.2 A
-print("\ncurrent sweep (10 V):", {k: round(100*np.mean(v), 1) for k, v in cur_sweep.items()})
-print("bus sweep (0.2 A):    ", {k: round(100*np.mean(v), 1) for k, v in bus_sweep.items()})
 
 
 # ============================================================
-#  Figure 1: representative cycle trace (10 V bus, 0.2 A)
+#  Representative cycle trace (10 V bus, 0.2 A, run 1)
 # ============================================================
 
 trace = next(r for r in runs if r["bus"] == 10.0 and r["cur"] == 0.2 and r["run"] == 1)
@@ -86,9 +67,11 @@ ein = np.array([float(r["E_in_J"]) for r in rows])
 eout = np.array([float(r["E_out_J"]) for r in rows])
 ph  = [r["phase"] for r in rows]
 
+
 def span(phase):
     ts = [t[i] for i, p in enumerate(ph) if p == phase]
     return (min(ts), max(ts)) if ts else None
+
 
 fig, ax = plt.subplots(figsize=(10.0, 5.0))
 for phase, color, label in [("charging", "#cfe0f3", "charge"),
@@ -119,44 +102,7 @@ ax.set_title(f"Supercapacitor cycle test (10 V bus, 0.2 A), "
 
 plt.tight_layout()
 os.makedirs(IMG, exist_ok=True)
-out1 = os.path.join(IMG, "supercap_cycle_trace.png")
-plt.savefig(out1, dpi=200, bbox_inches="tight")
-print("\nSaved", os.path.normpath(out1))
+out = os.path.join(IMG, "supercap_cycle_trace.png")
+plt.savefig(out, dpi=200, bbox_inches="tight")
+print("Saved", os.path.normpath(out))
 plt.close(fig)
-
-
-# ============================================================
-#  Figure 2: efficiency vs current and vs bus voltage
-# ============================================================
-
-fig, (axc, axb) = plt.subplots(1, 2, figsize=(11.0, 4.5))
-
-def plot_sweep(ax, sweep, xlabel, title, xpad):
-    xs = sorted(sweep.keys())
-    means = [100 * np.mean(sweep[x]) for x in xs]
-    for x in xs:
-        ax.plot([x] * len(sweep[x]), [100 * e for e in sweep[x]], "o",
-                color="#9abcd8", markersize=5, zorder=2)
-    ax.plot(xs, means, "-s", color="#1f77b4", linewidth=2.0, markersize=7,
-            zorder=3, label="mean of 3 runs")
-    for x, mn in zip(xs, means):
-        ax.annotate(f"{mn:.1f}", (x, mn), textcoords="offset points",
-                    xytext=(0, 10), ha="center", fontsize=8.5, color="#1f77b4")
-    ax.set_xlabel(xlabel, fontsize=11)
-    ax.set_ylabel("Round-trip efficiency  $\\eta_{RT}$  (%)", fontsize=11)
-    ax.set_title(title, fontsize=12)
-    ax.set_ylim(82, 94)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(min(xs) - xpad, max(xs) + xpad)
-    ax.legend(loc="lower right", fontsize=9)
-
-plot_sweep(axc, cur_sweep, "Charge / discharge current (A)",
-           "Efficiency vs current (10 V bus)", 0.05)
-plot_sweep(axb, bus_sweep, "Bus voltage (V)",
-           "Efficiency vs bus voltage (0.2 A)", 0.4)
-
-fig.suptitle("Supercapacitor round-trip efficiency (measured, 3 runs per point)", fontsize=13)
-plt.tight_layout(rect=[0, 0, 1, 0.96])
-out2 = os.path.join(IMG, "supercap_efficiency.png")
-plt.savefig(out2, dpi=175, bbox_inches="tight")
-print("Saved", os.path.normpath(out2))

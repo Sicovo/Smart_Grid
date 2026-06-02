@@ -21,13 +21,29 @@
 #
 # Telemetry: { role, vb_bus, v_panel, iL, p_panel, p_avg3s, i_ref, pwm,
 #              trip, trip_reason, vmpp_target, enable, wd,
-#              mppt_mode, irradiance, web_tick, po_dir, po_dp }
+#              mppt_mode, irradiance, web_tick, po_dir, po_dp,
+#              -- MPPT comparison test fields (meaningful while mppt_test_phase != 'idle') --
+#              mppt_test_phase, mppt_test_t_ms,
+#              mppt_test_irr_pct, mppt_test_step,
+#              mppt_test_fixed_vmpp, mppt_test_p_avg_last }
 #
 # p_avg3s is a true block average of p_panel over a 3-second window.
 # The window restarts whenever mppt_mode changes, so the displayed value
 # is always sourced from a single mode -- A/B'ing 'fixed' vs 'po' is just
 # "switch mode, wait 3 s, read the number".
-# Commands:  { enable, vmpp_target, reset_trip, mppt_mode }
+# Commands:  { enable, vmpp_target, reset_trip, mppt_mode,
+#              -- MPPT comparison test --
+#              mppt_test_start, mppt_test_next, mppt_test_abort,
+#              mppt_test_fixed_vmpp }
+#
+# MPPT comparison test: triggered by mppt_test_start: 1. Sequences fixed
+# -> LUT -> P&O at each operator-staged irradiance (25/50/75/100%), with
+# 3 s settle + 7 s record per cell. Operator stages the lab dimmer to the
+# next irradiance and presses mppt_test_next to advance from awaiting_setup
+# into the settling phase. The test-internal LUT (TEST_VMPP_TABLE, the
+# values from the new IV characterisation) is used for the LUT step --
+# the 'web' mode's VMPP_TABLE is left untouched so existing behaviour
+# is preserved. mppt_test_abort: 1 ends the test at any time.
 
 import time
 from machine import Pin, ADC, I2C, PWM, Timer
@@ -64,11 +80,11 @@ def read_va():
     # 4x oversample -- Pico ADC LSB noise is the dominant noise source
     # on Vb display. ~10 us extra inside a 1 ms tick budget.
     s = va_pin.read_u16() + va_pin.read_u16() + va_pin.read_u16() + va_pin.read_u16()
-    return 1.017 * (12490/2490) * 3.3 * (s >> 2) / 65536
+    return (12490/2490) * 3.3 * (s >> 2) / 65536
 
 def read_vb():
     s = vb_pin.read_u16() + vb_pin.read_u16() + vb_pin.read_u16() + vb_pin.read_u16()
-    return 1.015 * (12490/2490) * 3.3 * (s >> 2) / 65536
+    return (12490/2490) * 3.3 * (s >> 2) / 65536
 
 def sat(x, hi, lo):
     return max(lo, min(hi, x))
@@ -242,6 +258,79 @@ def _po_step(p_inst):
     return _po_vmpp
 
 # ============================================================
+# MPPT comparison test
+#
+# Test-internal LUT (NEW measured Vmpp values from the latest IV sweep).
+# Kept separate from the production VMPP_TABLE above so the 'web' mode's
+# behaviour is unchanged until the firmware revision lands.
+# ============================================================
+
+TEST_VMPP_TABLE = [
+    (0.25, 5.10),   # Pmax 1.15 W
+    (0.35, 5.10),   # Pmax 1.85 W
+    (0.50, 5.10),   # Pmax 2.18 W
+    (0.65, 5.20),   # Pmax 2.63 W
+    (0.80, 5.20),   # Pmax 3.18 W
+    (1.00, 5.20),   # Pmax 4.18 W
+]
+
+def _test_vmpp_lookup(irr):
+    """Like vmpp_from_irradiance() but against TEST_VMPP_TABLE."""
+    irr = max(0.0, min(1.0, irr))
+    if irr <= TEST_VMPP_TABLE[0][0]:
+        return TEST_VMPP_TABLE[0][1]
+    if irr >= TEST_VMPP_TABLE[-1][0]:
+        return TEST_VMPP_TABLE[-1][1]
+    for i in range(len(TEST_VMPP_TABLE) - 1):
+        x0, y0 = TEST_VMPP_TABLE[i]
+        x1, y1 = TEST_VMPP_TABLE[i + 1]
+        if x0 <= irr <= x1:
+            t = (irr - x0) / (x1 - x0)
+            return y0 + t * (y1 - y0)
+    return TEST_VMPP_TABLE[-1][1]
+
+# Sequence: fixed -> LUT -> P&O at each operator-staged irradiance step.
+MPPT_TEST_IRRADIANCES = (0.25, 0.50, 0.75, 1.00)
+MPPT_TEST_STEPS       = ('fixed', 'lut', 'po')
+MPPT_TEST_SETTLE_MS   = 3000
+MPPT_TEST_RECORD_MS   = 7000
+
+# Phases:
+#   'idle'           -> no test running
+#   'awaiting_setup' -> waiting for operator to set lab dimmer and press Next
+#   'settling'       -> 3 s post-switch settle (mode commanded, samples ignored)
+#   'recording'      -> 7 s averaging window (mode commanded, samples averaged)
+#   'done'           -> all 12 cells complete, results frozen
+#   'aborted'        -> test_abort received mid-test
+_mppt_test_phase       = 'idle'
+_mppt_test_irr_idx     = 0       # index into MPPT_TEST_IRRADIANCES
+_mppt_test_step_idx    = 0       # index into MPPT_TEST_STEPS
+_mppt_test_phase_start = 0       # ticks_ms at entry to current phase
+_mppt_test_t_start     = 0       # ticks_ms at the very start of the test
+_mppt_test_psum        = 0.0     # accumulator over the 7 s recording window
+_mppt_test_psum_n      = 0
+_mppt_test_p_avg_last  = 0.0     # most recently completed 7 s average power
+_mppt_test_fixed_vmpp  = VMPP_TARGET   # vmpp commanded during the 'fixed' step
+
+def _mppt_test_reset(to_phase='idle'):
+    global _mppt_test_phase, _mppt_test_irr_idx, _mppt_test_step_idx
+    global _mppt_test_psum, _mppt_test_psum_n
+    _mppt_test_phase   = to_phase
+    _mppt_test_irr_idx = 0
+    _mppt_test_step_idx = 0
+    _mppt_test_psum    = 0.0
+    _mppt_test_psum_n  = 0
+
+def _mppt_test_begin(fixed_vmpp):
+    global _mppt_test_phase, _mppt_test_phase_start, _mppt_test_t_start
+    global _mppt_test_fixed_vmpp, _mppt_test_p_avg_last
+    _mppt_test_reset(to_phase='awaiting_setup')
+    _mppt_test_fixed_vmpp = sat(float(fixed_vmpp), PO_VMPP_HI, PO_VMPP_LO)
+    _mppt_test_p_avg_last = 0.0
+    _mppt_test_t_start    = time.ticks_ms()
+    _mppt_test_phase_start = _mppt_test_t_start
+
+# ============================================================
 # Shared state (dashboard-compatible)
 # ============================================================
 
@@ -370,18 +459,56 @@ try:
         cmd     = state['cmd']
         enabled = bool(cmd.get('enable', 1))
 
+        # ---- MPPT comparison test commands ----
+        # Process once per tick, then clear so each press is a single event.
+        if cmd.get('mppt_test_start', 0):
+            cmd['mppt_test_start'] = 0
+            _mppt_test_begin(cmd.get('mppt_test_fixed_vmpp',
+                                     _mppt_test_fixed_vmpp))
+        if cmd.get('mppt_test_next', 0):
+            cmd['mppt_test_next'] = 0
+            if _mppt_test_phase == 'awaiting_setup':
+                _mppt_test_phase       = 'settling'
+                _mppt_test_phase_start = time.ticks_ms()
+                _mppt_test_psum        = 0.0
+                _mppt_test_psum_n      = 0
+        if cmd.get('mppt_test_abort', 0):
+            cmd['mppt_test_abort'] = 0
+            if _mppt_test_phase not in ('idle', 'done', 'aborted'):
+                _mppt_test_phase = 'aborted'
+        # Optional live update of the 'fixed' step's commanded Vmpp.
+        if 'mppt_test_fixed_vmpp' in cmd:
+            try:
+                _mppt_test_fixed_vmpp = sat(float(cmd['mppt_test_fixed_vmpp']),
+                                            PO_VMPP_HI, PO_VMPP_LO)
+            except (TypeError, ValueError):
+                pass
+
         # Decide vmpp_target based on active mode.
         # 'web'   -> irradiance from server -> lookup table
         # 'po'    -> Perturb & Observe (slow outer search, dead-zone'd)
         # 'fixed' -> cmd override or hardcoded 6.23 V (original behaviour)
+        # If the MPPT test is in settling/recording, it overrides both the
+        # mode selection and the commanded Vmpp for the duration of the cell.
         mode = cmd.get('mppt_mode', MPPT_MODE)
 
+        test_active   = _mppt_test_phase in ('settling', 'recording')
+        if test_active:
+            test_step = MPPT_TEST_STEPS[_mppt_test_step_idx]
+            test_irr  = MPPT_TEST_IRRADIANCES[_mppt_test_irr_idx]
+            mode = 'po' if test_step == 'po' else 'fixed'
+        else:
+            test_step = ''
+            test_irr  = 0.0
+
         # Reseed P&O on transition INTO 'po' so a stale _po_vmpp from
-        # minutes ago doesn't dump us at the wrong operating point. Seed
-        # from the current fixed-mode vmpp_target so switching from
-        # 'fixed' continues at whatever the user was last running.
+        # minutes ago doesn't dump us at the wrong operating point. During
+        # the test, seed from the test LUT so P&O starts close to the peak.
         if mode == 'po' and not _po_active:
-            _po_reseed(cmd.get('vmpp_target', VMPP_TARGET))
+            if test_active:
+                _po_reseed(_test_vmpp_lookup(test_irr))
+            else:
+                _po_reseed(cmd.get('vmpp_target', VMPP_TARGET))
             _po_active = True
         elif mode != 'po' and _po_active:
             _po_active = False
@@ -390,8 +517,44 @@ try:
             vmp_target = vmpp_from_irradiance(_web_irradiance)
         elif mode == 'po':
             vmp_target = _po_step(_p_lp)
+        elif test_active and test_step == 'fixed':
+            vmp_target = _mppt_test_fixed_vmpp
+        elif test_active and test_step == 'lut':
+            vmp_target = _test_vmpp_lookup(test_irr)
         else:
             vmp_target = cmd.get('vmpp_target', VMPP_TARGET)
+
+        # ---- MPPT test: phase advance + recording-window accumulator ----
+        if test_active:
+            now_test_ms = time.ticks_ms()
+            phase_ms    = time.ticks_diff(now_test_ms, _mppt_test_phase_start)
+            if _mppt_test_phase == 'settling':
+                if phase_ms >= MPPT_TEST_SETTLE_MS:
+                    _mppt_test_phase       = 'recording'
+                    _mppt_test_phase_start = now_test_ms
+                    _mppt_test_psum        = 0.0
+                    _mppt_test_psum_n      = 0
+            else:  # 'recording'
+                _mppt_test_psum   += _p_lp
+                _mppt_test_psum_n += 1
+                if phase_ms >= MPPT_TEST_RECORD_MS:
+                    _mppt_test_p_avg_last = (
+                        _mppt_test_psum / _mppt_test_psum_n
+                        if _mppt_test_psum_n > 0 else 0.0
+                    )
+                    # advance: next step -> next irradiance -> done
+                    _mppt_test_step_idx += 1
+                    if _mppt_test_step_idx >= len(MPPT_TEST_STEPS):
+                        _mppt_test_step_idx = 0
+                        _mppt_test_irr_idx += 1
+                        if _mppt_test_irr_idx >= len(MPPT_TEST_IRRADIANCES):
+                            _mppt_test_phase = 'done'
+                        else:
+                            _mppt_test_phase       = 'awaiting_setup'
+                            _mppt_test_phase_start = now_test_ms
+                    else:
+                        _mppt_test_phase       = 'settling'
+                        _mppt_test_phase_start = now_test_ms
 
         # ---- 3-second block average of p_panel (for mode A/B testing) ----
         # Restart the window on mode change so the average never mixes modes.
@@ -440,6 +603,18 @@ try:
             # P&O extras (only meaningful while mode == 'po')
             'po_dir':      _po_dir,
             'po_dp':       _po_last_dp,
+            # MPPT comparison test extras
+            'mppt_test_phase':        _mppt_test_phase,
+            'mppt_test_t_ms':         (time.ticks_diff(time.ticks_ms(),
+                                                       _mppt_test_t_start)
+                                       if _mppt_test_phase != 'idle' else 0),
+            'mppt_test_irr_pct':      int(round(
+                                        MPPT_TEST_IRRADIANCES[_mppt_test_irr_idx]
+                                        * 100)),
+            'mppt_test_step':         (MPPT_TEST_STEPS[_mppt_test_step_idx]
+                                       if _mppt_test_phase != 'idle' else ''),
+            'mppt_test_fixed_vmpp':   _mppt_test_fixed_vmpp,
+            'mppt_test_p_avg_last':   _mppt_test_p_avg_last,
         }
 
         # ---- Safety guards (non-latching; auto-recover) ----
@@ -448,21 +623,29 @@ try:
             _trip_reason = 'panel_collapse'
             _reset_controllers()
             pwm.duty_u16(PWM_MIN)
+            if _mppt_test_phase in ('awaiting_setup', 'settling', 'recording'):
+                _mppt_test_phase = 'aborted'
         elif _va > VA_OVERVOLTAGE:
             _trip_active = 1
             _trip_reason = 'bus_overvolt'
             _reset_controllers()
             pwm.duty_u16(PWM_MIN)
+            if _mppt_test_phase in ('awaiting_setup', 'settling', 'recording'):
+                _mppt_test_phase = 'aborted'
         elif abs(_il) > I_TRIP_ABS_LOCAL:
             _trip_active = 1
             _trip_reason = 'overcurrent'
             _reset_controllers()
             pwm.duty_u16(PWM_MIN)
+            if _mppt_test_phase in ('awaiting_setup', 'settling', 'recording'):
+                _mppt_test_phase = 'aborted'
         elif not enabled:
             _trip_active = 0
             _trip_reason = ''
             _reset_controllers()
             pwm.duty_u16(PWM_MIN)
+            if _mppt_test_phase in ('awaiting_setup', 'settling', 'recording'):
+                _mppt_test_phase = 'aborted'
         else:
             _trip_active = 0
             _trip_reason = ''

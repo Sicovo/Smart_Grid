@@ -16,7 +16,7 @@ const API_BASE =
   import.meta.env.VITE_API_BASE_URL ??
   "/api";
 
-const MODULE_ROLES = ["pv", "grid", "export", "cap", "led", "lux"];
+const MODULE_ROLES = ["pv", "grid", "export", "cap", "led"];
 const STALE_AFTER_MS = 5000;
 
 function getModuleStatus(module) {
@@ -28,7 +28,7 @@ function getModuleStatus(module) {
   if (Date.now() - t > STALE_AFTER_MS) return "stale";
   if (module.trip) return "trip";
   if (module.wd) return "watchdog";
-  if (module.role !== "lux" && !module.enable) return "disabled";
+  if (!module.enable) return "disabled";
 
   return "online";
 }

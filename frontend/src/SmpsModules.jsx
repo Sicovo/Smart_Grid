@@ -5,7 +5,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const ROLES = ['pv', 'grid', 'export', 'cap', 'led', 'lux'];
+const ROLES = ['pv', 'grid', 'export', 'cap', 'led'];
 
 const DEFAULT_HOSTS = {
   pv:     'pv.local',
@@ -13,7 +13,6 @@ const DEFAULT_HOSTS = {
   export: 'export.local',
   cap:    'cap.local',
   led:    'led.local',
-  lux:    'lux.local',
 };
 
 const ROLE_COLORS = {
@@ -22,7 +21,6 @@ const ROLE_COLORS = {
   export: '#b67ad9',
   cap:    '#5ec9c0',
   led:    '#d9a85a',
-  lux:    '#f5c84b',
 };
 
 const ROLE_LABELS = {
@@ -31,7 +29,6 @@ const ROLE_LABELS = {
   export: 'Export — buck, CV dissipate',
   cap:    'Cap — bidirectional, current-cmd',
   led:    'LED — 3× CC driver',
-  lux:    'Lux — irradiance sensor',
 };
 
 const MOD_CHART_LINES = {
@@ -55,9 +52,6 @@ const MOD_CHART_LINES = {
     { key: 'vb_bus', label: 'Vbus', color: '#e6e6e6' },
     { key: 'iL',     label: 'iL',   color: '#5ec9c0' },
   ],
-  lux:    [
-    { key: 'v_ldr', label: 'V_ldr', color: '#f5c84b' },
-  ],
   led:    [
     { key: 'i_red', label: 'R', color: '#e07070' },
     { key: 'i_yel', label: 'Y', color: '#d9c95a' },
@@ -77,13 +71,8 @@ function fmt(v, digits = 2) {
 
 // ─── Shared UI atoms ──────────────────────────────────────────────────────────
 
-function StatusPill({ d, role }) {
+function StatusPill({ d }) {
   if (!d) return <span className="smps-pill smps-pill-offline">offline</span>;
-  if (role === 'lux') {
-    return d.calibrated
-      ? <span className="smps-pill smps-pill-ok">calibrated</span>
-      : <span className="smps-pill smps-pill-warn">uncal</span>;
-  }
   if (d.trip)    return <span className="smps-pill smps-pill-err">TRIP</span>;
   if (d.wd)      return <span className="smps-pill smps-pill-warn">watchdog</span>;
   if (!d.enable) return <span className="smps-pill smps-pill-warn">disabled</span>;
@@ -215,26 +204,6 @@ function LEDStats({ d }) {
   );
 }
 
-function LuxStats({ d }) {
-  if (!d) return null;
-  const irrPct = typeof d.irradiance === 'number' ? d.irradiance * 100 : null;
-  const uncal = !d.calibrated;
-  return <>
-    {uncal && (
-      <div className="smps-stat smps-stat-wide smps-stat-warn">
-        <div className="smps-stat-label" style={{ color: '#d9a85a' }}>UNCALIBRATED</div>
-        <div style={{ fontSize: 12, color: '#d9a85a', lineHeight: 1.5 }}>
-          Lamp OFF → Set 0%. &nbsp; Lamp FULL → Set 100%.
-        </div>
-      </div>
-    )}
-    <Stat label="LDR voltage"  val={d.v_ldr}  unit="V" digits={3} />
-    <Stat label="Irradiance"   val={irrPct}   unit="%" digits={1} />
-    <Stat label="V_dark (cal)" val={d.v_dark} unit="V" digits={3} />
-    <Stat label="V_full (cal)" val={d.v_full} unit="V" digits={3} />
-  </>;
-}
-
 // ─── Per-module control panels ────────────────────────────────────────────────
 
 function PVControls({ d, onCmd }) {
@@ -355,23 +324,6 @@ function LEDControls({ onCmd }) {
   </>;
 }
 
-function LuxControls({ onCmd }) {
-  return <>
-    <CtrlRow label="Step 1">
-      <Btn onClick={() => onCmd({ calibrate: 'dark' })}>Set 0% (lamp OFF)</Btn>
-    </CtrlRow>
-    <CtrlRow label="Step 2">
-      <Btn onClick={() => onCmd({ calibrate: 'full' })}>Set 100% (lamp FULL)</Btn>
-    </CtrlRow>
-    <div className="smps-quickbar">
-      <Btn variant="warn" onClick={() => {
-        if (window.confirm('Wipe calibration data on the ESP32?'))
-          onCmd({ calibrate: 'reset' });
-      }}>⚠ Reset calibration</Btn>
-    </div>
-  </>;
-}
-
 // ─── Module card ─────────────────────────────────────────────────────────────
 
 function ModuleCard({ role, data, history, onCmd }) {
@@ -385,7 +337,6 @@ function ModuleCard({ role, data, history, onCmd }) {
     export: <ExportStats d={data} />,
     cap:    <CapStats    d={data} />,
     led:    <LEDStats    d={data} />,
-    lux:    <LuxStats    d={data} />,
   }[role];
 
   const ctrlNode = {
@@ -394,7 +345,6 @@ function ModuleCard({ role, data, history, onCmd }) {
     export: <ExportControls         onCmd={onCmd} />,
     cap:    <CapControls            onCmd={onCmd} />,
     led:    <LEDControls            onCmd={onCmd} />,
-    lux:    <LuxControls            onCmd={onCmd} />,
   }[role];
 
   return (
@@ -409,7 +359,7 @@ function ModuleCard({ role, data, history, onCmd }) {
       {/* Header */}
       <div className="smps-card-header">
         <span className="smps-card-title" style={{ color }}>{label}</span>
-        <StatusPill d={data} role={role} />
+        <StatusPill d={data} />
       </div>
 
       {/* Trip banner */}
