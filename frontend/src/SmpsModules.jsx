@@ -11,7 +11,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const ROLES = ["pv", "grid", "export", "cap", "lux", "led"];
+const ROLES = ["pv", "grid", "export", "cap", "led"];
 const ALGORITHM_ROLES = ["pv", "grid", "export", "cap", "led"];
 
 const HIST_MAX = 60;
@@ -26,7 +26,6 @@ const DEFAULT_HOSTS = {
   grid: "grid.local",
   export: "export.local",
   cap: "cap.local",
-  lux: "lux.local",
   led: "led.local",
 };
 
@@ -35,7 +34,6 @@ const ROLE_COLORS = {
   grid: "#5a8ec9",
   export: "#b67ad9",
   cap: "#5ec9c0",
-  lux: "#f5c84b",
   led: "#d9a85a",
 };
 
@@ -44,7 +42,6 @@ const ROLE_LABELS = {
   grid: "Grid — buck, CV import",
   export: "Export — buck, CV dissipate",
   cap: "Cap — bidirectional, command-driven",
-  lux: "Lux — irradiance sensor",
   led: "LED load — 3 × CC",
 };
 
@@ -79,7 +76,6 @@ const MOD_CHART_LINES = {
     { key: "vb_bus", label: "Vbus", color: "#e6e6e6" },
     { key: "iL", label: "iL", color: "#5ec9c0" },
   ],
-  lux: [{ key: "v_ldr", label: "V_ldr", color: "#f5c84b" }],
   led: [
     { key: "i_red", label: "R", color: "#e07070" },
     { key: "i_yel", label: "Y", color: "#d9c95a" },
@@ -173,7 +169,7 @@ function CtrlRow({ label, children }) {
   );
 }
 
-function StatusPill({ d, role, status }) {
+function StatusPill({ d, status }) {
   // /modules/status is the source of truth for online/offline.
   // Expected backend shape:
   // { pv: { online: true, last_seen: "...", age_s: 1.23 }, ... }
@@ -182,14 +178,6 @@ function StatusPill({ d, role, status }) {
   }
 
   // Once online, fault/status detail still comes from latest telemetry.
-  if (role === "lux") {
-    return d?.calibrated ? (
-      <span className="smps-pill smps-pill-ok">CALIBRATED</span>
-    ) : (
-      <span className="smps-pill smps-pill-warn">UNCAL</span>
-    );
-  }
-
   if (d?.trip) return <span className="smps-pill smps-pill-err">TRIP</span>;
   if (d?.wd) return <span className="smps-pill smps-pill-warn">WATCHDOG</span>;
   if (d && d.enable === false) return <span className="smps-pill smps-pill-warn">disabled</span>;
@@ -435,28 +423,6 @@ function CapStats({ d }) {
       </div>
 
       <Stat label="Energy stored" val={d.energy_J} unit="J" digits={1} />
-    </>
-  );
-}
-
-function LuxStats({ d }) {
-  if (!d) return null;
-  const irrPct = typeof d.irradiance === "number" ? d.irradiance * 100 : null;
-
-  return (
-    <>
-      {!d.calibrated && (
-        <div className="smps-stat smps-stat-wide smps-stat-warn">
-          <div className="smps-stat-label">UNCALIBRATED</div>
-          <div className="smps-stat-sub strong">
-            Turn lamp OFF → Set 0%. Then turn lamp FULL → Set 100%.
-          </div>
-        </div>
-      )}
-      <Stat label="LDR voltage" val={d.v_ldr} unit="V" digits={3} tag="sun" />
-      <Stat label="Irradiance" val={irrPct} unit="%" digits={1} tag="sun" />
-      <Stat label="V_dark (cal)" val={d.v_dark} unit="V" digits={3} />
-      <Stat label="V_full (cal)" val={d.v_full} unit="V" digits={3} />
     </>
   );
 }
@@ -858,37 +824,6 @@ function CapControls({ d, onCmd }) {
   );
 }
 
-function LuxControls({ onCmd }) {
-  return (
-    <>
-      <CtrlRow label="Step 1">
-        <Btn onClick={() => onCmd({ calibrate: "dark" })}>Set 0% lamp OFF</Btn>
-      </CtrlRow>
-
-      <CtrlRow label="Step 2">
-        <Btn onClick={() => onCmd({ calibrate: "full" })}>Set 100% lamp FULL</Btn>
-      </CtrlRow>
-
-      <div className="smps-ctrl-hint">
-        Captures current LDR voltage and stores calibration on the ESP32.
-      </div>
-
-      <div className="smps-quickbar">
-        <Btn
-          variant="warn"
-          onClick={() => {
-            if (window.confirm("Wipe calibration data on the ESP32?")) {
-              onCmd({ calibrate: "reset" });
-            }
-          }}
-        >
-          Reset calibration
-        </Btn>
-      </div>
-    </>
-  );
-}
-
 function LEDControls({ onCmd }) {
   const [p, setP] = useState({ red: 0, yel: 0, grn: 0 });
 
@@ -941,7 +876,6 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage }
     grid: <GridStats d={data} />,
     export: <ExportStats d={data} />,
     cap: <CapStats d={data} />,
-    lux: <LuxStats d={data} />,
     led: <LEDStats d={data} lastBusVoltage={lastBusVoltage} />,
   }[role];
 
@@ -950,7 +884,6 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage }
     grid: <GridControls onCmd={onCmd} />,
     export: <ExportControls onCmd={onCmd} />,
     cap: <CapControls d={data} onCmd={onCmd} />,
-    lux: <LuxControls onCmd={onCmd} />,
     led: <LEDControls onCmd={onCmd} />,
   }[role];
 
@@ -978,7 +911,7 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage }
               {data.mppt_mode.toUpperCase()}
             </span>
           )}
-          <StatusPill d={data} role={role} status={status} />
+          <StatusPill d={data} status={status} />
         </span>
       </div>
 
