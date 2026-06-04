@@ -1,47 +1,63 @@
-"""Naive grid-balancing policy.
+"""Naive grid-balancing policy — v2.
 
 Pure decision function: given a snapshot of the grid + bus state, return
 the commands to issue to each firmware module. No DB, no HTTP, no globals.
 
-Goal: minimise grid import and export. The supercap is the primary
-balancing actuator; grid + export are the passive safety net.
+================================================================
+Goal
+================================================================
+Minimise grid import AND export. The supercap is the primary balancing
+actuator; grid + export form the passive symmetric-droop safety net.
 
-Architecture: **always-enabled symmetric droop**.
-  - grid   is always enabled, vb_target = 9.9 V
-  - export is always enabled, vb_target = 10.1 V
-  - Together they form a 9.9–10.1 V deadband on the bus.
-  - As long as cap can absorb/release the imbalance, the bus stays inside
-    the deadband and NEITHER grid nor export flows current. Zero import,
-    zero export.
-  - When cap saturates (SoC ceiling on charge, floor on discharge, or
-    |i_cmd| > 0.6 A), the bus drifts out of the deadband and the relevant
-    side of the droop takes over automatically. No mode switch needed.
+================================================================
+Mental model
+================================================================
+1. **PV is derated to a bus-side value** before any balance math.
+       pv_bus = pv_panel × η_pv   (η_pv = 0.80, conservative)
+   This accounts for the boost converter loss between the panel and the
+   bus. Without this, we'd over-command LED dissipation by ~20 % and the
+   bus would sag, dragging grid in to make up the difference.
 
-Active policy (decides cap and LED setpoints each tick):
+2. **Deferrables are first-class load** as soon as their window opens.
+   Each active deferrable has a smooth required rate:
+       rate_W = remaining_energy / max(1, tick_end − tick + 1)
+   That spreads the energy linearly across the remaining ticks, ADAPTIVE
+   to any catch-up needed (if we under-served last tick, rate goes up).
+   At the deadline tick, rate equals remaining_energy — last-chance dump.
 
-    net = pv_p - demand_p
+3. **Effective load = base demand + Σ deferrable rates**.
+   This is what the LED is commanded to dissipate.
 
-    SURPLUS  (net > deadband):
-        1. Serve deferrables EDF — they consume directly from PV at 100 %
-           efficiency, which is the cheapest way to reduce future demand.
-        2. Charge cap with whatever's left over (clamped at 15.7 V).
-        3. Anything still left → droop exports it passively.
+4. **Balance:**
+       net = pv_bus − effective_load
+       net > +deadband → SURPLUS → cap charges (refused above 15.7 V),
+                                   overflow exported by droop
+       net < −deadband → DEFICIT → cap discharges (refused below 11.0 V),
+                                   shortfall imported by droop
+       |net| ≤ deadband → IDLE → cap idle, droop holds the bus
 
-    DEFICIT  (net < -deadband):
-        1. Discharge cap to cover the deficit (refused below 11.0 V).
-        2. Anything still uncovered → droop imports it passively.
+5. **Grid and export are ALWAYS enabled** at their droop targets
+   (9.9 V / 10.1 V). They only flow current when cap saturates and the
+   bus leaves the 9.9–10.1 V deadband.
 
-    IDLE     (|net| ≤ deadband):
-        cap.i_cmd = 0; droop holds the bus.
+================================================================
+Why this minimises both import and export
+================================================================
+- Deferrables are smoothed across their window, not greedy. So a single
+  big-energy deferrable (e.g. 50 J in 60 ticks) takes ~0.8 W instead of
+  consuming the entire surplus on tick 0. The cap actually gets to charge.
+- PV is derated, so we never over-command LED. Bus stays balanced.
+- Cap is preferred over grid in deficit (discharges first).
+- Cap is preferred over export in surplus (charges first).
+- The deadband (1 W) prevents cap chatter on noise.
+- Even if the auto-loop crashes, the droop holds the bus indefinitely.
 
-LED setpoint = demand_p + served_deferrable_power, split equally across
-the three channels. LEDs are the only physical load that can dissipate
-both base demand and the deferrable energy buckets.
-
-Firmware-matched constants (see firmware/cap_smps/main.py):
-  - V_CAP_CHARGE_STOP    = 15.7 V  (firmware hard charge cutoff)
-  - V_CAP_DISCHARGE_STOP = 11.0 V  (firmware starts tapering below this)
-  - I_CAP_MAX            = 0.60 A  (firmware clamp)
+================================================================
+Firmware-matched constants (firmware/cap_smps/main.py)
+================================================================
+  V_CAP_CHARGE_STOP    = 15.7 V   (firmware hard charge cutoff)
+  V_CAP_DISCHARGE_STOP = 11.0 V   (firmware starts tapering below this)
+  I_CAP_MAX            = 0.60 A   (firmware clamp)
 """
 
 import json
@@ -61,8 +77,16 @@ VB_TARGET_EXPORT = 10.1
 GRID_I_REF_MAX_HW   = 2.0     # match grid_smps   I_REF_HI
 EXPORT_I_REF_MAX_HW = 2.0     # match export_smps I_REF_HI
 
-VBUS_FALLBACK = 9.9           # if telemetry missing / invalid
-POWER_DEADBAND_W = 1.0        # don't bother enabling grid/export for crumbs
+VBUS_FALLBACK    = 9.9        # if telemetry missing / invalid
+POWER_DEADBAND_W = 1.0        # idle band on the net imbalance
+
+# Conservative PV boost-converter efficiency. Bus-side PV power = panel × this.
+# 0.80 is intentionally pessimistic — covers boost loss + cabling + cap-module
+# standby + LED converter loss. If we ever measure actual η > 0.85 we can bump.
+PV_EFFICIENCY = 0.80
+
+# LED firmware datasheet clamp — won't accept >3 W per channel.
+P_LED_MAX_PER_CH = 3.0
 
 
 # ---------------- Types ----------------
@@ -72,17 +96,17 @@ class Deferrable:
     index:      int
     tick_start: int
     tick_end:   int
-    energy:     float   # remaining energy at this tick (W, treated as power per tick)
+    energy:     float   # remaining energy at this tick (W-tick units)
 
 
 @dataclass
 class GridState:
     tick:        int
-    pv_p:        float                          # PV power available  (W)
-    demand_p:    float                          # base demand         (W)
+    pv_p:        float                          # PV PANEL power (W, pre-loss)
+    demand_p:    float                          # base demand   (W)
     vbus:        float                          # measured bus voltage (V)
     v_cap:       float                          # supercap terminal voltage (V)
-    energy_cap:  float                          # available cap energy (J)
+    energy_cap:  float                          # cap energy (J)
     deferrables: List[Deferrable] = field(default_factory=list)
 
 
@@ -102,8 +126,8 @@ class LedCmd:
 
 @dataclass
 class GridCmd:
-    # Always enabled — passive droop safety net. Only flows current when
-    # bus sags below 9.9 V (i.e. cap has saturated on the discharge side).
+    # Always enabled — passive droop. Sources current only when bus sags
+    # below 9.9 V (i.e. cap has saturated on the discharge side).
     enable:    int   = 1
     vb_target: float = VB_TARGET_GRID
     i_ref_max: float = GRID_I_REF_MAX_HW
@@ -111,8 +135,8 @@ class GridCmd:
 
 @dataclass
 class ExportCmd:
-    # Always enabled — passive droop safety net. Only flows current when
-    # bus rises above 10.1 V (i.e. cap has saturated on the charge side).
+    # Always enabled — passive droop. Sinks current only when bus rises
+    # above 10.1 V (i.e. cap has saturated on the charge side).
     enable:    int   = 1
     vb_target: float = VB_TARGET_EXPORT
     i_ref_max: float = EXPORT_I_REF_MAX_HW
@@ -120,14 +144,37 @@ class ExportCmd:
 
 @dataclass
 class Commands:
-    cap:                CapCmd     = field(default_factory=CapCmd)
-    led:                LedCmd     = field(default_factory=LedCmd)
-    grid:               GridCmd    = field(default_factory=GridCmd)
-    export:             ExportCmd  = field(default_factory=ExportCmd)
-    served_deferrables: List[Dict] = field(default_factory=list)
-    surplus_W:          float      = 0.0
-    deficit_W:          float      = 0.0
-    regime:             str        = "idle"   # "surplus" | "deficit" | "idle"
+    cap:    CapCmd    = field(default_factory=CapCmd)
+    led:    LedCmd    = field(default_factory=LedCmd)
+    grid:   GridCmd   = field(default_factory=GridCmd)
+    export: ExportCmd = field(default_factory=ExportCmd)
+
+    # --- Diagnostics (for the dashboard "what is the algo doing?" panel) ---
+    regime: str = "idle"          # "surplus" | "deficit" | "idle"
+
+    # Bus-side energy accounting (post PV derate).
+    pv_panel_W:        float = 0.0     # raw panel reading
+    pv_bus_W:          float = 0.0     # = pv_panel × PV_EFFICIENCY
+    pv_eta_used:       float = PV_EFFICIENCY
+    demand_W:          float = 0.0
+    def_rate_total_W:  float = 0.0     # Σ active deferrable rates
+    effective_load_W:  float = 0.0     # demand + Σ def rates
+    net_W:             float = 0.0     # pv_bus - effective_load (+surplus / -deficit)
+
+    # Per-deferrable detail for the dashboard table.
+    active_deferrables: List[Dict] = field(default_factory=list)
+
+    # Cap accounting.
+    cap_p_W:        float = 0.0   # signed: +charging, −discharging (bus side)
+    cap_clamped:    str   = ""    # "" / "ceiling" / "floor" / "i_max"
+    cap_headroom_W: float = 0.0   # how much more cap could absorb/release
+
+    # Residual after cap (handled passively by droop).
+    surplus_W:  float = 0.0       # bus-side overflow → droop exports it
+    deficit_W:  float = 0.0       # bus-side shortfall → droop imports it
+
+    # LED clamp diagnostic.
+    led_clamped_W: float = 0.0    # how much LED would have been over the clamp
 
 
 # ---------------- Helpers ----------------
@@ -138,30 +185,27 @@ def _safe_vbus(v):
     return float(v)
 
 
-def _serve_deferrables_edf(deferrables, surplus, tick):
-    """Earliest-deadline-first allocation of surplus to active jobs.
-    Returns (served_list, remaining_surplus, served_power_total)."""
-    served = []
-    served_power = 0.0
-    active = sorted(
-        [d for d in deferrables
-         if d.tick_start <= tick <= d.tick_end and d.energy > 0],
-        key=lambda d: d.tick_end,
-    )
-    for d in active:
-        if surplus <= 0:
-            break
-        used = min(d.energy, surplus)
-        surplus     -= used
-        served_power += used
-        served.append({
-            'index':            d.index,
-            'served_energy':    used,
-            'remaining_energy': d.energy - used,
-            'tick_start':       d.tick_start,
-            'tick_end':         d.tick_end,
-        })
-    return served, max(0.0, surplus), served_power
+def _active_deferrable_rates(deferrables, tick):
+    """Return (total_rate_W, [per-deferrable diagnostic dicts]) for the
+    deferrables whose window covers ``tick``. Each rate is
+    remaining_energy / ticks_remaining, so the bucket completes by its
+    deadline even if we under-served earlier ticks."""
+    total = 0.0
+    detail = []
+    for d in deferrables:
+        if d.tick_start <= tick <= d.tick_end and d.energy > 0:
+            ticks_remaining = max(1, d.tick_end - tick + 1)
+            rate = d.energy / ticks_remaining
+            total += rate
+            detail.append({
+                "index":              d.index,
+                "tick_start":         d.tick_start,
+                "tick_end":           d.tick_end,
+                "ticks_remaining":    ticks_remaining,
+                "remaining_energy":   d.energy,
+                "rate_W":             rate,
+            })
+    return total, detail
 
 
 # ---------------- Core policy ----------------
@@ -169,58 +213,96 @@ def _serve_deferrables_edf(deferrables, surplus, tick):
 def decide(state: GridState) -> Commands:
     cmd  = Commands()
     vbus = _safe_vbus(state.vbus)
-    net  = state.pv_p - state.demand_p
 
-    # LED base = demand (always must be served). Surplus path may add served
-    # deferrable power on top — computed after deferrable allocation below.
-    led_total = max(0.0, state.demand_p)
+    # Step 1 — derate PV from panel side to bus side.
+    pv_bus = max(0.0, state.pv_p) * PV_EFFICIENCY
 
-    # Grid and export are ALWAYS enabled at their droop targets (set by
-    # GridCmd / ExportCmd defaults). The naive only commands the cap and
-    # the LED — droop handles overflow / underflow passively.
+    # Step 2 — active deferrables become smooth load on the bus.
+    def_rate_total, def_detail = _active_deferrable_rates(
+        state.deferrables, state.tick
+    )
+
+    # Step 3 — effective load and net imbalance.
+    demand = max(0.0, state.demand_p)
+    effective_load = demand + def_rate_total
+    net = pv_bus - effective_load
+
+    # Step 4 — LED dissipates the entire effective load (split 3 ways).
+    # The LED firmware clamps internally at 3 W/channel, but compute the
+    # "would-have-been" overflow for diagnostics.
+    led_each = effective_load / 3.0
+    led_clamped_overflow = 0.0
+    if led_each > P_LED_MAX_PER_CH:
+        led_clamped_overflow = (led_each - P_LED_MAX_PER_CH) * 3.0
+        led_each = P_LED_MAX_PER_CH
+
+    cmd.led.p_red = led_each
+    cmd.led.p_yel = led_each
+    cmd.led.p_grn = led_each
+
+    # Step 5 — cap absorbs / releases as much of the imbalance as it can.
+    cap_clamped = ""
+    cap_p = 0.0     # bus-side power: +charging, -discharging
+    cap_headroom = 0.0
 
     if net > POWER_DEADBAND_W:
-        # ---------- SURPLUS ----------
         cmd.regime = "surplus"
-        served, leftover, served_power = _serve_deferrables_edf(
-            state.deferrables, net, state.tick
-        )
-        cmd.served_deferrables = served
-        led_total += served_power
 
-        # Charge cap with the remainder, clamped to firmware cutoff.
-        if leftover > 0 and state.v_cap < V_CAP_CHARGE_STOP:
-            i_charge      = min(I_CAP_MAX, leftover / vbus)
+        if state.v_cap >= V_CAP_CHARGE_STOP:
+            cap_clamped = "ceiling"
+            cap_p = 0.0
+            cap_headroom = 0.0
+        else:
+            i_request = net / vbus
+            i_charge  = min(I_CAP_MAX, i_request)
+            if i_request > I_CAP_MAX:
+                cap_clamped = "i_max"
             cmd.cap.i_cmd = i_charge
-            leftover     -= i_charge * vbus
+            cap_p         = i_charge * vbus
+            cap_headroom  = I_CAP_MAX * vbus - cap_p
 
-        # Anything still left over → droop will export it passively.
-        cmd.surplus_W = max(0.0, leftover)
+        residual = max(0.0, net - cap_p)
+        cmd.surplus_W = residual    # droop exports this
+        cmd.deficit_W = 0.0
 
     elif net < -POWER_DEADBAND_W:
-        # ---------- DEFICIT ----------
         cmd.regime = "deficit"
         deficit = -net
 
-        # Discharge cap if it has usable energy.
-        if state.v_cap > V_CAP_DISCHARGE_STOP and state.energy_cap > 0:
-            i_discharge   = min(I_CAP_MAX, deficit / vbus)
+        if state.v_cap <= V_CAP_DISCHARGE_STOP or state.energy_cap <= 0:
+            cap_clamped = "floor"
+            cap_p = 0.0
+            cap_headroom = 0.0
+        else:
+            i_request   = deficit / vbus
+            i_discharge = min(I_CAP_MAX, i_request)
+            if i_request > I_CAP_MAX:
+                cap_clamped = "i_max"
             cmd.cap.i_cmd = -i_discharge
-            deficit      -= i_discharge * vbus
+            cap_p         = -i_discharge * vbus
+            cap_headroom  = I_CAP_MAX * vbus - i_discharge * vbus
 
-        # Anything still uncovered → droop will import it passively.
-        cmd.deficit_W = max(0.0, deficit)
+        residual = max(0.0, deficit - (-cap_p))
+        cmd.deficit_W = residual    # droop imports this
+        cmd.surplus_W = 0.0
 
     else:
-        # ---------- BALANCED ----------
-        # Within the droop deadband; cap idles, droop holds the bus.
         cmd.regime = "idle"
+        cap_p = 0.0
+        cap_headroom = 0.0
 
-    # LED setpoints — equal split across 3 channels.
-    each = led_total / 3.0
-    cmd.led.p_red = each
-    cmd.led.p_yel = each
-    cmd.led.p_grn = each
+    # ---- Fill diagnostics ----
+    cmd.pv_panel_W         = state.pv_p
+    cmd.pv_bus_W           = pv_bus
+    cmd.demand_W           = demand
+    cmd.def_rate_total_W   = def_rate_total
+    cmd.effective_load_W   = effective_load
+    cmd.net_W              = net
+    cmd.active_deferrables = def_detail
+    cmd.cap_p_W            = cap_p
+    cmd.cap_clamped        = cap_clamped
+    cmd.cap_headroom_W     = cap_headroom
+    cmd.led_clamped_W      = led_clamped_overflow
 
     return cmd
 
@@ -302,13 +384,40 @@ def commands_to_payloads(cmd: Commands) -> Dict[str, Dict]:
     }
 
 
-# ---------------- Back-compat shim for the old name ----------------
+def commands_to_diagnostics(cmd: Commands) -> Dict:
+    """Project the Commands dataclass to the JSON shape the dashboard
+    debug panel consumes. Stable shape — frontend code reads these keys."""
+    return {
+        "regime":           cmd.regime,
+        "pv_panel_W":       round(cmd.pv_panel_W,       4),
+        "pv_bus_W":         round(cmd.pv_bus_W,         4),
+        "pv_eta_used":      cmd.pv_eta_used,
+        "demand_W":         round(cmd.demand_W,         4),
+        "def_rate_total_W": round(cmd.def_rate_total_W, 4),
+        "effective_load_W": round(cmd.effective_load_W, 4),
+        "net_W":            round(cmd.net_W,            4),
+        "cap_p_W":          round(cmd.cap_p_W,          4),
+        "cap_clamped":      cmd.cap_clamped,
+        "cap_headroom_W":   round(cmd.cap_headroom_W,   4),
+        "surplus_W":        round(cmd.surplus_W,        4),
+        "deficit_W":        round(cmd.deficit_W,        4),
+        "led_clamped_W":    round(cmd.led_clamped_W,    4),
+        "active_deferrables": [
+            {
+                **d,
+                "rate_W":           round(d["rate_W"], 4),
+                "remaining_energy": round(d["remaining_energy"], 4),
+            }
+            for d in cmd.active_deferrables
+        ],
+    }
 
-def naivealgo(pv_p, demand, deferrable, vbus, energy_cap, tick,
-              v_cap=12.0):
+
+# ---------------- Back-compat shim ----------------
+
+def naivealgo(pv_p, demand, deferrable, vbus, energy_cap, tick, v_cap=12.0):
     """Legacy signature kept so any old caller still works.
-    Returns just the cap i_cmd (a float), matching the old contract.
-    Prefer ``decide()`` for new code."""
+    Returns just the cap i_cmd (a float)."""
     defs = []
     for idx, d in enumerate(deferrable or []):
         if not isinstance(d, dict):

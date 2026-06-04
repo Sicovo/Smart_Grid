@@ -275,30 +275,7 @@ function NaiveDispatchCard({
         <span className="icon-green">●</span> Naive Dispatch
       </div>
 
-      <div className="naive-grid naive-grid-compact">
-        <div className="naive-item">
-          <p>PV Power</p>
-          <h3>{typeof naive?.inputs?.pv_power_W === "number" ? `${naive.inputs.pv_power_W.toFixed(2)} W` : "-"}</h3>
-        </div>
-        <div className="naive-item">
-          <p>Demand</p>
-          <h3>{typeof naive?.inputs?.demand_W === "number" ? `${naive.inputs.demand_W.toFixed(2)} W` : "-"}</h3>
-        </div>
-        <div className="naive-item">
-          <p>Cap i_cmd</p>
-          <h3>{typeof naive?.suggested?.cap?.i_cmd === "number" ? `${naive.suggested.cap.i_cmd.toFixed(3)} A` : "-"}</h3>
-        </div>
-        <div className="naive-item">
-          <p>LED each</p>
-          <h3>{typeof naive?.suggested?.led?.p_red === "number" ? `${naive.suggested.led.p_red.toFixed(2)} W` : "-"}</h3>
-        </div>
-      </div>
-
-      <p className="naive-meta">
-        Served deferables: {Array.isArray(naive?.served_deferrables) ? naive.served_deferrables.length : 0}
-        {" · "}
-        Remaining surplus: {typeof naive?.remaining_surplus_W === "number" ? `${naive.remaining_surplus_W.toFixed(2)} W` : "-"}
-      </p>
+      <NaiveDebugPanel naive={naive} />
 
       <div className="naive-toolbar">
         <label className="naive-auto-label">
@@ -361,9 +338,320 @@ function NaiveDispatchCard({
 
       {applyMsg && <p className="naive-apply-msg">{applyMsg}</p>}
 
+      <RunCostPanel       apiBase={apiBase} />
       <ServerAutoLoopPanel apiBase={apiBase} />
       <DataExportPanel    apiBase={apiBase} />
     </section>
+  );
+}
+
+
+// ---- "What is the algorithm doing right now?" debug panel ----
+// Reads `naive.diagnostics` (populated by buysellalgorithm/naive.py's
+// commands_to_diagnostics) and renders a compact, glanceable view.
+function NaiveDebugPanel({ naive }) {
+  const d   = naive?.diagnostics || {};
+  const inp = naive?.inputs || {};
+  const fmt = (v, n = 2, suf = "") =>
+    typeof v === "number" ? `${v.toFixed(n)}${suf}` : "—";
+
+  const regime = d.regime || naive?.regime || "—";
+  const regimeColor =
+    regime === "surplus" ? "#1f9d55" :
+    regime === "deficit" ? "#d4351c" :
+    regime === "idle"    ? "#666"    : "#aaa";
+
+  const active = Array.isArray(d.active_deferrables) ? d.active_deferrables : [];
+  const clamp  = d.cap_clamped || "";
+  const clampLabel = {
+    ceiling: "cap at ceiling (≥15.7 V)",
+    floor:   "cap at floor (≤11.0 V)",
+    i_max:   "cap at |i|=0.6 A current limit",
+    "":      "",
+  }[clamp];
+
+  return (
+    <div className="naive-debug" style={{ display: "grid", gap: 10 }}>
+      {/* Top status strip */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span
+          style={{
+            background: regimeColor, color: "#fff", padding: "2px 10px",
+            borderRadius: 4, fontWeight: 600, textTransform: "uppercase",
+            fontSize: 12, letterSpacing: 0.5,
+          }}
+        >
+          {regime}
+        </span>
+        <span style={{ fontSize: 13, color: "#444" }}>
+          tick <strong>{naive?.tick ?? "—"}</strong>
+        </span>
+        <span style={{ fontSize: 13, color: "#444" }}>
+          net <strong>{fmt(d.net_W, 2, " W")}</strong>
+        </span>
+        {regime === "surplus" && d.surplus_W > 0.05 && (
+          <span style={{ fontSize: 13, color: "#0a7" }}>
+            exporting {fmt(d.surplus_W, 2, " W")} (cap saturated)
+          </span>
+        )}
+        {regime === "deficit" && d.deficit_W > 0.05 && (
+          <span style={{ fontSize: 13, color: "#a30" }}>
+            importing {fmt(d.deficit_W, 2, " W")} (cap can't cover)
+          </span>
+        )}
+      </div>
+
+      {/* Bus-side energy balance */}
+      <div
+        style={{
+          border: "1px solid #e0e0e0", borderRadius: 6, padding: "8px 10px",
+          fontSize: 13, lineHeight: 1.7, background: "#fafafa",
+        }}
+      >
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Bus-side energy balance</div>
+        <div>
+          PV panel <strong>{fmt(d.pv_panel_W, 2, " W")}</strong>
+          {" × η="}<code>{fmt(d.pv_eta_used, 2)}</code>
+          {" → bus "}<strong style={{ color: "#0a7" }}>{fmt(d.pv_bus_W, 2, " W")}</strong>
+        </div>
+        <div>
+          load = demand <strong>{fmt(d.demand_W, 2, " W")}</strong>
+          {" + deferrable rate "}<strong>{fmt(d.def_rate_total_W, 2, " W")}</strong>
+          {" = "}<strong style={{ color: "#a30" }}>{fmt(d.effective_load_W, 2, " W")}</strong>
+        </div>
+        <div>
+          net = pv_bus − load = <strong>{fmt(d.net_W, 2, " W")}</strong>
+        </div>
+        <div>
+          cap absorbs <strong>{fmt(d.cap_p_W, 2, " W")}</strong>
+          {" (i_cmd "}<code>{fmt(naive?.suggested?.cap?.i_cmd, 3, " A")}</code>{")"}
+          {clampLabel && (
+            <span style={{ marginLeft: 8, color: "#a30", fontSize: 12 }}>
+              ⚠ {clampLabel}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Active deferrables — the "what's filling up" view */}
+      <div
+        style={{
+          border: "1px solid #e0e0e0", borderRadius: 6, padding: "8px 10px",
+          fontSize: 13, background: "#fff",
+        }}
+      >
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>
+          Active deferrables ({active.length})
+        </div>
+        {active.length === 0 ? (
+          <div style={{ color: "#888" }}>
+            no deferrable in window — algorithm idle on def_rate
+          </div>
+        ) : (
+          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ color: "#666", textAlign: "left" }}>
+                <th style={{ padding: "2px 4px" }}>#</th>
+                <th style={{ padding: "2px 4px" }}>window</th>
+                <th style={{ padding: "2px 4px" }}>remaining</th>
+                <th style={{ padding: "2px 4px" }}>ticks left</th>
+                <th style={{ padding: "2px 4px" }}>rate now</th>
+                <th style={{ padding: "2px 4px", width: 120 }}>filling</th>
+              </tr>
+            </thead>
+            <tbody>
+              {active.map((ad) => {
+                // For the progress bar: we don't know the original total energy
+                // (Azure only reports what's left). Use a heuristic: rate × full
+                // window gives a rough notional total. The bar shows the
+                // proportion already served.
+                const windowLen = ad.tick_end - ad.tick_start + 1;
+                const notionalTotal = Math.max(ad.remaining_energy, ad.rate_W * windowLen);
+                const served = Math.max(0, notionalTotal - ad.remaining_energy);
+                const pct    = notionalTotal > 0 ? (served / notionalTotal) * 100 : 0;
+                return (
+                  <tr key={ad.index} style={{ borderTop: "1px solid #f0f0f0" }}>
+                    <td style={{ padding: "4px" }}>{ad.index}</td>
+                    <td style={{ padding: "4px" }}>{ad.tick_start}–{ad.tick_end}</td>
+                    <td style={{ padding: "4px" }}>{fmt(ad.remaining_energy, 2)}</td>
+                    <td style={{ padding: "4px" }}>{ad.ticks_remaining}</td>
+                    <td style={{ padding: "4px" }}>
+                      <strong>{fmt(ad.rate_W, 2, " W")}</strong>
+                    </td>
+                    <td style={{ padding: "4px" }}>
+                      <div style={{
+                        background: "#eee", height: 10, borderRadius: 3,
+                        overflow: "hidden", position: "relative",
+                      }}>
+                        <div style={{
+                          width: `${Math.min(100, pct).toFixed(1)}%`,
+                          height: "100%",
+                          background: "linear-gradient(90deg, #4caf50, #2e7d32)",
+                        }} />
+                      </div>
+                      <div style={{ fontSize: 10, color: "#666", marginTop: 1 }}>
+                        ~{pct.toFixed(0)}% served
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Outgoing setpoints */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, fontSize: 12 }}>
+        <div className="naive-item" style={{ background: "#f5f5f5", padding: 6, borderRadius: 4 }}>
+          <p style={{ margin: 0, color: "#666" }}>cap.i_cmd</p>
+          <h3 style={{ margin: 0 }}>{fmt(naive?.suggested?.cap?.i_cmd, 3, " A")}</h3>
+        </div>
+        <div className="naive-item" style={{ background: "#f5f5f5", padding: 6, borderRadius: 4 }}>
+          <p style={{ margin: 0, color: "#666" }}>LED each</p>
+          <h3 style={{ margin: 0 }}>{fmt(naive?.suggested?.led?.p_red, 2, " W")}</h3>
+        </div>
+        <div className="naive-item" style={{ background: "#f5f5f5", padding: 6, borderRadius: 4 }}>
+          <p style={{ margin: 0, color: "#666" }}>v_cap</p>
+          <h3 style={{ margin: 0 }}>{fmt(inp.v_cap_V, 2, " V")}</h3>
+        </div>
+        <div className="naive-item" style={{ background: "#f5f5f5", padding: 6, borderRadius: 4 }}>
+          <p style={{ margin: 0, color: "#666" }}>vbus</p>
+          <h3 style={{ margin: 0 }}>{fmt(inp.vbus_V, 2, " V")}</h3>
+        </div>
+      </div>
+
+      {d.led_clamped_W > 0.01 && (
+        <p style={{ color: "#a30", fontSize: 12 }}>
+          ⚠ LED setpoint clamped — {fmt(d.led_clamped_W, 2, " W")} couldn't be dissipated
+          (each channel hit 3 W cap)
+        </p>
+      )}
+    </div>
+  );
+}
+
+
+// ---- Cumulative cost of the current run ----
+// Polls /algo/run/cost every 3 s and renders the running tally.
+// Shows raw integral (J · price), per-kWh interpretation, and breakdown.
+function RunCostPanel({ apiBase }) {
+  const [cost, setCost] = useState(null);
+  const [err,  setErr]  = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(`${apiBase}/algo/run/cost`);
+        if (res.status === 404) {
+          if (!cancelled) { setCost(null); setErr(""); }
+          return;
+        }
+        if (!res.ok) {
+          if (!cancelled) setErr(`cost fetch failed: ${res.status}`);
+          return;
+        }
+        const data = await res.json();
+        if (!cancelled) { setCost(data); setErr(""); }
+      } catch (e) {
+        if (!cancelled) setErr(String(e?.message || e));
+      }
+    }
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [apiBase]);
+
+  const fmt = (v, n = 4) => (typeof v === "number" ? v.toFixed(n) : "—");
+  const fmtJ = (v) => (typeof v === "number" ? `${v.toFixed(1)} J` : "—");
+
+  if (!cost && !err) {
+    return (
+      <div className="naive-host-panel" style={{ marginTop: 12 }}>
+        <div className="naive-toolbar"><strong>Run cost meter:</strong></div>
+        <p className="naive-host-msg">no run started yet</p>
+      </div>
+    );
+  }
+
+  const net = cost?.net_cost_raw ?? 0;
+  const netSign = net > 0 ? "+" : net < 0 ? "−" : "";
+  const netColor = net > 0 ? "#a30" : net < 0 ? "#0a7" : "#444";
+  const netAbs = Math.abs(net);
+
+  return (
+    <div className="naive-host-panel" style={{ marginTop: 12 }}>
+      <div className="naive-toolbar" style={{ alignItems: "baseline" }}>
+        <strong>Run cost meter</strong>
+        <span style={{ fontSize: 11, color: "#888" }}>
+          since {cost?.run_started_at ? new Date(cost.run_started_at).toLocaleTimeString() : "—"}
+          {" · "}
+          {cost?.run_running === false && "stopped · "}
+          {cost?.price_ticks ?? 0} ticks
+        </span>
+      </div>
+
+      {err && (
+        <p className="naive-apply-msg" style={{ color: "#c00" }}>{err}</p>
+      )}
+
+      {/* Headline net cost */}
+      <div style={{
+        background: "#fafafa", border: "1px solid #e0e0e0", borderRadius: 6,
+        padding: "10px 14px", marginTop: 6,
+      }}>
+        <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase",
+                      letterSpacing: 0.5, marginBottom: 2 }}>
+          Net cost so far {net > 0 ? "(paid out)" : net < 0 ? "(net earned)" : ""}
+        </div>
+        <div style={{ fontSize: 24, fontWeight: 700, color: netColor, lineHeight: 1.1 }}>
+          {netSign}{fmt(netAbs, 4)} <span style={{ fontSize: 12, color: "#888" }}>raw</span>
+        </div>
+        <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+          ≈ {netSign}{fmt(Math.abs(cost?.net_cost_per_kWh ?? 0), 6)} per kWh-equivalent
+        </div>
+      </div>
+
+      {/* Breakdown table */}
+      <table style={{
+        width: "100%", marginTop: 8, fontSize: 12, borderCollapse: "collapse",
+      }}>
+        <thead>
+          <tr style={{ color: "#666", textAlign: "left", borderBottom: "1px solid #eee" }}>
+            <th style={{ padding: "4px 6px" }}>side</th>
+            <th style={{ padding: "4px 6px" }}>energy</th>
+            <th style={{ padding: "4px 6px" }}>avg price</th>
+            <th style={{ padding: "4px 6px" }}>raw</th>
+            <th style={{ padding: "4px 6px" }}>samples</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={{ borderBottom: "1px solid #f5f5f5" }}>
+            <td style={{ padding: "4px 6px", color: "#a30" }}>↓ import (paid)</td>
+            <td style={{ padding: "4px 6px" }}>{fmtJ(cost?.import_energy_J)}</td>
+            <td style={{ padding: "4px 6px" }}>{fmt(cost?.avg_buy_price, 3)}</td>
+            <td style={{ padding: "4px 6px", color: "#a30" }}>
+              +{fmt(cost?.import_cost_raw, 4)}
+            </td>
+            <td style={{ padding: "4px 6px", color: "#888" }}>{cost?.import_samples ?? 0}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: "4px 6px", color: "#0a7" }}>↑ export (earned)</td>
+            <td style={{ padding: "4px 6px" }}>{fmtJ(cost?.export_energy_J)}</td>
+            <td style={{ padding: "4px 6px" }}>{fmt(cost?.avg_sell_price, 3)}</td>
+            <td style={{ padding: "4px 6px", color: "#0a7" }}>
+              −{fmt(cost?.export_revenue_raw, 4)}
+            </td>
+            <td style={{ padding: "4px 6px", color: "#888" }}>{cost?.export_samples ?? 0}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p className="naive-host-msg" style={{ marginTop: 6, fontSize: 11, color: "#888" }}>
+        "raw" = ∫ p · price · dt (J × Azure price). Divide by 3.6×10⁶ for per-kWh units.
+      </p>
+    </div>
   );
 }
 

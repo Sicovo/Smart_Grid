@@ -28,6 +28,7 @@ from buysellalgorithm.naive import (  # noqa: E402
     decide as naive_decide,
     state_from_db_rows as naive_state_from_db_rows,
     commands_to_payloads as naive_commands_to_payloads,
+    commands_to_diagnostics as naive_commands_to_diagnostics,
 )
 
 app = FastAPI()
@@ -252,29 +253,40 @@ def _run_naive_from_db(grid_row, module_rows):
     if state is None:
         return {"error": "No grid snapshot available"}
 
-    cmd = naive_decide(state)
+    cmd      = naive_decide(state)
     payloads = naive_commands_to_payloads(cmd)
+    diag     = naive_commands_to_diagnostics(cmd)
 
     return {
         "tick":   state.tick,
         "regime": cmd.regime,
+        # Raw inputs that fed the decision (so the dashboard can show what
+        # the algo was looking at this tick).
         "inputs": {
-            "pv_power_W":       state.pv_p,
+            "pv_power_W":       state.pv_p,        # PANEL side, pre-loss
             "demand_W":         state.demand_p,
             "vbus_V":           state.vbus,
             "v_cap_V":          state.v_cap,
             "energy_cap_J":     state.energy_cap,
             "deferables_count": len(state.deferrables),
         },
+        # Per-module setpoints we'll dispatch.
         "suggested": {
             "cap":    payloads["cap"],
             "led":    payloads["led"],
             "grid":   payloads["grid"],
             "export": payloads["export"],
         },
-        "served_deferrables":   cmd.served_deferrables,
-        "remaining_surplus_W":  round(cmd.surplus_W, 4),
-        "remaining_deficit_W":  round(cmd.deficit_W, 4),
+        # Full bus-side energy accounting for the debug panel. Stable
+        # shape — see buysellalgorithm/naive.py::commands_to_diagnostics.
+        "diagnostics": diag,
+        # Back-compat fields the frontend already reads.
+        "remaining_surplus_W":  diag["surplus_W"],
+        "remaining_deficit_W":  diag["deficit_W"],
+        # Kept for back-compat with the old EDF "served" key. Now empty
+        # because deferrables are smoothed across the window, not served
+        # greedily. Use diagnostics.active_deferrables instead.
+        "served_deferrables":   [],
     }
 
 
@@ -743,6 +755,171 @@ def auto_naive_stop():
 def auto_naive_status():
     with _auto_lock:
         return dict(_auto_state)
+
+
+# ============================================================
+# Phase 4b: Live cost meter for the current run
+# ============================================================
+# Integrates grid p_import × buy_price and export p_dissip × sell_price
+# over the time range since /algo/auto/start was last called.
+#
+# Method:
+#   - Grid snapshots carry the per-tick buy_price / sell_price.
+#   - Module snapshots (grid, export) carry p_import / p_dissip in watts.
+#   - For each pair of consecutive module snapshots, do trapezoidal
+#     integration: avg_power × dt = energy_J. Multiply by the price that
+#     was in effect at that timestamp (binary-search into grid snapshots).
+#   - Gaps > 30 s are treated as missing data and skipped (so a stopped
+#     run doesn't accumulate phantom cost during the gap).
+#
+# Units:
+#   - energy_J is true joules.
+#   - "cost" is the raw integral p_W · dt_s · price (currency units per W·s).
+#     For a price-per-kWh interpretation, divide by 3.6e6.
+#   - Both raw and per-kWh values are returned so the dashboard can show
+#     whichever makes sense once we know what Azure's price units are.
+
+import bisect as _bisect
+
+def _bus_cost_integrate(mod_rows, power_field, price_rows, price_field,
+                        max_dt_s=30.0):
+    """Trapezoidal integration of p_W × dt × price over consecutive
+    module snapshots. Returns (energy_J, cost_raw, samples_used)."""
+    if not mod_rows or len(mod_rows) < 2:
+        return 0.0, 0.0, 0
+    price_ts = [p.timestamp for p in price_rows]
+
+    def price_at(ts):
+        idx = _bisect.bisect_right(price_ts, ts)
+        if idx == 0:
+            return None
+        return getattr(price_rows[idx - 1], price_field)
+
+    total_e = 0.0
+    total_c = 0.0
+    samples = 0
+    for i in range(1, len(mod_rows)):
+        r0, r1 = mod_rows[i - 1], mod_rows[i]
+        dt = (r1.timestamp - r0.timestamp).total_seconds()
+        if dt <= 0 or dt > max_dt_s:
+            continue
+        p0 = max(0.0, _f(getattr(r0, power_field, 0)))
+        p1 = max(0.0, _f(getattr(r1, power_field, 0)))
+        p_avg = 0.5 * (p0 + p1)
+        if p_avg <= 0:
+            continue
+        e_j = p_avg * dt
+        total_e += e_j
+        pr = price_at(r0.timestamp)
+        if pr is not None:
+            total_c += e_j * pr
+        samples += 1
+    return total_e, total_c, samples
+
+
+@app.get("/algo/run/cost")
+def run_cost():
+    """Cumulative grid-trading cost since the auto-loop was last started.
+
+    Returns 404 if no run has been started in this process. Otherwise:
+        {
+          run_started_at, since,
+          import_energy_J, import_cost_raw, import_cost_per_kWh,
+          export_energy_J, export_revenue_raw, export_revenue_per_kWh,
+          net_cost_raw, net_cost_per_kWh,
+          avg_buy_price, avg_sell_price,
+          samples
+        }
+    "Net cost" follows the usual sign convention: positive means we paid
+    out, negative means the run net-earned via exports.
+    """
+    started_at = _get_run_started_at_dt()
+    if started_at is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active or recorded run. Start the auto-loop first.",
+        )
+
+    db = SessionLocal()
+    try:
+        # Prices come from grid snapshots — one per Azure tick.
+        price_rows = (
+            db.query(GridSnapshot)
+            .filter(GridSnapshot.timestamp >= started_at)
+            .order_by(GridSnapshot.timestamp)
+            .all()
+        )
+        grid_mod = (
+            db.query(ModuleSnapshot)
+            .filter(ModuleSnapshot.timestamp >= started_at,
+                    ModuleSnapshot.role == "grid")
+            .order_by(ModuleSnapshot.timestamp)
+            .all()
+        )
+        export_mod = (
+            db.query(ModuleSnapshot)
+            .filter(ModuleSnapshot.timestamp >= started_at,
+                    ModuleSnapshot.role == "export")
+            .order_by(ModuleSnapshot.timestamp)
+            .all()
+        )
+
+        imp_e, imp_c, imp_n = _bus_cost_integrate(
+            grid_mod,   "p_import",  price_rows, "buy_price"
+        )
+        exp_e, exp_r, exp_n = _bus_cost_integrate(
+            export_mod, "p_dissip",  price_rows, "sell_price"
+        )
+
+        # Time-weighted average prices over the run (for context).
+        if len(price_rows) >= 2:
+            buy_avg_sum = 0.0
+            sell_avg_sum = 0.0
+            t_total = 0.0
+            for j in range(1, len(price_rows)):
+                dt = (price_rows[j].timestamp - price_rows[j-1].timestamp).total_seconds()
+                if dt <= 0 or dt > 60: continue
+                buy_avg_sum  += (_f(price_rows[j-1].buy_price)  or 0) * dt
+                sell_avg_sum += (_f(price_rows[j-1].sell_price) or 0) * dt
+                t_total      += dt
+            avg_buy  = buy_avg_sum  / t_total if t_total > 0 else None
+            avg_sell = sell_avg_sum / t_total if t_total > 0 else None
+        else:
+            avg_buy = avg_sell = None
+
+        # Per-kWh conversion: energy_J / 3.6e6 = kWh.
+        # cost_raw = J × price_per_kWh; cost_per_kWh = cost_raw / 3.6e6.
+        kwh_factor = 1.0 / 3.6e6
+
+        with _auto_lock:
+            stopped_at = _auto_state.get("stopped_at")
+            running    = _auto_state.get("running")
+
+        return {
+            "run_started_at": started_at.isoformat(),
+            "run_stopped_at": stopped_at,
+            "run_running":    running,
+            "since":          started_at.isoformat(),
+
+            "import_energy_J":        round(imp_e, 3),
+            "import_cost_raw":        round(imp_c, 6),
+            "import_cost_per_kWh":    round(imp_c * kwh_factor, 6),
+            "import_samples":         imp_n,
+
+            "export_energy_J":        round(exp_e, 3),
+            "export_revenue_raw":     round(exp_r, 6),
+            "export_revenue_per_kWh": round(exp_r * kwh_factor, 6),
+            "export_samples":         exp_n,
+
+            "net_cost_raw":           round(imp_c - exp_r, 6),
+            "net_cost_per_kWh":       round((imp_c - exp_r) * kwh_factor, 6),
+
+            "avg_buy_price":  round(avg_buy,  4) if avg_buy  is not None else None,
+            "avg_sell_price": round(avg_sell, 4) if avg_sell is not None else None,
+            "price_ticks":    len(price_rows),
+        }
+    finally:
+        db.close()
 
 
 # ============================================================
