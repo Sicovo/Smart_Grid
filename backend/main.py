@@ -815,119 +815,221 @@ def _query_export(db, since=None, until=None, last_hours=None):
     )
 
 
+def _build_export_response(grid_rows, mod_rows, dec_rows, meta, fmt,
+                           filename_prefix="smartgrid-export"):
+    """Format-dispatch helper used by every /export/* endpoint.
+    Returns a FastAPI Response (csv zip) or a dict (json)."""
+    if fmt == "csv":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Grid snapshots
+            s = io.StringIO()
+            w = csv.writer(s)
+            w.writerow(["id", "timestamp", "day", "tick", "sun",
+                        "buy_price", "sell_price", "instant_demand",
+                        "deferables_json"])
+            for r in grid_rows:
+                w.writerow([r.id, r.timestamp.isoformat(), r.day, r.tick,
+                            r.sun, r.buy_price, r.sell_price,
+                            r.instant_demand, r.deferables_json])
+            zf.writestr("grid_snapshots.csv", s.getvalue())
+
+            # Module snapshots (all columns)
+            s = io.StringIO()
+            w = csv.writer(s)
+            cols = [c.name for c in ModuleSnapshot.__table__.columns]
+            w.writerow(cols)
+            for r in mod_rows:
+                row_vals = []
+                for c in cols:
+                    v = getattr(r, c)
+                    if isinstance(v, datetime):
+                        v = v.isoformat()
+                    row_vals.append(v)
+                w.writerow(row_vals)
+            zf.writestr("module_snapshots.csv", s.getvalue())
+
+            # Naive decisions
+            s = io.StringIO()
+            w = csv.writer(s)
+            w.writerow(["id", "timestamp", "tick", "regime", "all_ok",
+                        "inputs_json", "recommendation_json",
+                        "applied_json"])
+            for r in dec_rows:
+                w.writerow([r.id, r.timestamp.isoformat(), r.tick,
+                            r.regime, r.all_ok,
+                            r.inputs_json, r.recommendation_json,
+                            r.applied_json])
+            zf.writestr("naive_decisions.csv", s.getvalue())
+
+            zf.writestr("manifest.json", json.dumps(meta, indent=2))
+
+        buf.seek(0)
+        ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        return Response(
+            content=buf.read(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="{filename_prefix}-{ts}.zip"'
+            },
+        )
+
+    # JSON
+    return {
+        **meta,
+        "grid_snapshots":   [_grid_row_to_dict(r)     for r in grid_rows],
+        "module_snapshots": [_module_row_dict(r)      for r in mod_rows],
+        "naive_decisions":  [_decision_row_to_dict(r) for r in dec_rows],
+    }
+
+
+def _get_run_started_at_dt():
+    """Read the current auto-loop run's start time as a naive UTC datetime,
+    or None if the loop has never been started in this process."""
+    with _auto_lock:
+        s = _auto_state.get("started_at")
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/export/full")
 def export_full(format: str = "json",
                 since: str = None,
                 until: str = None,
                 last_hours: float = None):
+    """Export every row in the requested range. No filter = everything."""
     db = SessionLocal()
     try:
         grid_rows, mod_rows, dec_rows, since_dt, until_dt = _query_export(
             db, since=since, until=until, last_hours=last_hours
         )
-
         meta = {
-            "exported_at":      datetime.utcnow().isoformat(),
-            "since":            since_dt.isoformat() if since_dt else None,
-            "until":            until_dt.isoformat() if until_dt else None,
-            "grid_count":       len(grid_rows),
-            "module_count":     len(mod_rows),
-            "decision_count":   len(dec_rows),
+            "exported_at":    datetime.utcnow().isoformat(),
+            "scope":          "full",
+            "since":          since_dt.isoformat() if since_dt else None,
+            "until":          until_dt.isoformat() if until_dt else None,
+            "grid_count":     len(grid_rows),
+            "module_count":   len(mod_rows),
+            "decision_count": len(dec_rows),
         }
-
-        if format == "csv":
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                # Grid snapshots
-                s = io.StringIO()
-                w = csv.writer(s)
-                w.writerow(["id", "timestamp", "day", "tick", "sun",
-                            "buy_price", "sell_price", "instant_demand",
-                            "deferables_json"])
-                for r in grid_rows:
-                    w.writerow([r.id, r.timestamp.isoformat(), r.day, r.tick,
-                                r.sun, r.buy_price, r.sell_price,
-                                r.instant_demand, r.deferables_json])
-                zf.writestr("grid_snapshots.csv", s.getvalue())
-
-                # Module snapshots (all columns, one row per snapshot)
-                s = io.StringIO()
-                w = csv.writer(s)
-                cols = [c.name for c in ModuleSnapshot.__table__.columns]
-                w.writerow(cols)
-                for r in mod_rows:
-                    row_vals = []
-                    for c in cols:
-                        v = getattr(r, c)
-                        if isinstance(v, datetime):
-                            v = v.isoformat()
-                        row_vals.append(v)
-                    w.writerow(row_vals)
-                zf.writestr("module_snapshots.csv", s.getvalue())
-
-                # Naive decisions
-                s = io.StringIO()
-                w = csv.writer(s)
-                w.writerow(["id", "timestamp", "tick", "regime", "all_ok",
-                            "inputs_json", "recommendation_json",
-                            "applied_json"])
-                for r in dec_rows:
-                    w.writerow([r.id, r.timestamp.isoformat(), r.tick,
-                                r.regime, r.all_ok,
-                                r.inputs_json, r.recommendation_json,
-                                r.applied_json])
-                zf.writestr("naive_decisions.csv", s.getvalue())
-
-                # Manifest so future-you knows what generated this zip
-                zf.writestr("manifest.json", json.dumps(meta, indent=2))
-
-            buf.seek(0)
-            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-            return Response(
-                content=buf.read(),
-                media_type="application/zip",
-                headers={
-                    "Content-Disposition":
-                        f'attachment; filename="smartgrid-export-{ts}.zip"'
-                },
-            )
-
-        # JSON format
-        return {
-            **meta,
-            "grid_snapshots":   [_grid_row_to_dict(r)     for r in grid_rows],
-            "module_snapshots": [_module_row_dict(r)      for r in mod_rows],
-            "naive_decisions":  [_decision_row_to_dict(r) for r in dec_rows],
-        }
+        return _build_export_response(grid_rows, mod_rows, dec_rows, meta,
+                                      format, filename_prefix="smartgrid-full")
     finally:
         db.close()
 
 
-@app.get("/export/summary")
-def export_summary():
-    """Lightweight counts + earliest/latest timestamps. Useful before
-    triggering a heavy /export/full call."""
+@app.get("/export/run")
+def export_run(format: str = "csv"):
+    """Export every row recorded SINCE the most recent auto-loop start.
+    Returns 404 if /algo/auto/start has not been called this process.
+
+    This is what the dashboard "Download CSV zip" button hits — it scopes
+    to a single test run rather than the full DB history."""
+    started_at = _get_run_started_at_dt()
+    if started_at is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active or recorded run. Start the auto-loop first "
+                   "(POST /algo/auto/start), then download.",
+        )
+
     db = SessionLocal()
     try:
-        def first_last(q, col):
-            first = q.order_by(col.asc()).first()
-            last  = q.order_by(col.desc()).first()
-            return (
-                first.timestamp.isoformat() if first else None,
-                last.timestamp.isoformat()  if last  else None,
-            )
+        grid_rows, mod_rows, dec_rows, since_dt, until_dt = _query_export(
+            db, since=started_at.isoformat(), until=None, last_hours=None
+        )
+        with _auto_lock:
+            stopped_at = _auto_state.get("stopped_at")
+            running    = _auto_state.get("running")
+        meta = {
+            "exported_at":    datetime.utcnow().isoformat(),
+            "scope":          "run",
+            "run_started_at": started_at.isoformat(),
+            "run_stopped_at": stopped_at,
+            "run_running":    running,
+            "since":          since_dt.isoformat() if since_dt else None,
+            "grid_count":     len(grid_rows),
+            "module_count":   len(mod_rows),
+            "decision_count": len(dec_rows),
+        }
+        return _build_export_response(grid_rows, mod_rows, dec_rows, meta,
+                                      format, filename_prefix="smartgrid-run")
+    finally:
+        db.close()
 
-        grid_first, grid_last = first_last(db.query(GridSnapshot),   GridSnapshot.timestamp)
-        mod_first,  mod_last  = first_last(db.query(ModuleSnapshot), ModuleSnapshot.timestamp)
-        dec_first,  dec_last  = first_last(db.query(NaiveDecision),  NaiveDecision.timestamp)
 
+def _counts_in_range(db, since=None, until=None):
+    """Counts + earliest/latest timestamps for each table within range."""
+    def first_last(q, col):
+        first = q.order_by(col.asc()).first()
+        last  = q.order_by(col.desc()).first()
+        return (
+            first.timestamp.isoformat() if first else None,
+            last.timestamp.isoformat()  if last  else None,
+        )
+
+    def scope(q, col):
+        if since is not None: q = q.filter(col >= since)
+        if until is not None: q = q.filter(col <= until)
+        return q
+
+    g_q = scope(db.query(GridSnapshot),   GridSnapshot.timestamp)
+    m_q = scope(db.query(ModuleSnapshot), ModuleSnapshot.timestamp)
+    d_q = scope(db.query(NaiveDecision),  NaiveDecision.timestamp)
+
+    g_first, g_last = first_last(g_q, GridSnapshot.timestamp)
+    m_first, m_last = first_last(m_q, ModuleSnapshot.timestamp)
+    d_first, d_last = first_last(d_q, NaiveDecision.timestamp)
+
+    return {
+        "grid_snapshots":   {"count": g_q.count(), "first": g_first, "last": g_last},
+        "module_snapshots": {"count": m_q.count(), "first": m_first, "last": m_last},
+        "naive_decisions":  {"count": d_q.count(), "first": d_first, "last": d_last},
+    }
+
+
+@app.get("/export/summary")
+def export_summary():
+    """All-time counts + earliest/latest timestamps."""
+    db = SessionLocal()
+    try:
+        return _counts_in_range(db)
+    finally:
+        db.close()
+
+
+@app.get("/export/run/summary")
+def export_run_summary():
+    """Counts scoped to the current auto-loop run."""
+    started_at = _get_run_started_at_dt()
+    if started_at is None:
+        with _auto_lock:
+            stopped_at = _auto_state.get("stopped_at")
         return {
-            "grid_snapshots":   {"count": db.query(GridSnapshot).count(),
-                                 "first": grid_first, "last": grid_last},
-            "module_snapshots": {"count": db.query(ModuleSnapshot).count(),
-                                 "first": mod_first,  "last": mod_last},
-            "naive_decisions":  {"count": db.query(NaiveDecision).count(),
-                                 "first": dec_first,  "last": dec_last},
+            "run_started_at": None,
+            "run_stopped_at": stopped_at,
+            "run_running":    False,
+            "grid_snapshots":   {"count": 0, "first": None, "last": None},
+            "module_snapshots": {"count": 0, "first": None, "last": None},
+            "naive_decisions":  {"count": 0, "first": None, "last": None},
+        }
+
+    db = SessionLocal()
+    try:
+        counts = _counts_in_range(db, since=started_at)
+        with _auto_lock:
+            stopped_at = _auto_state.get("stopped_at")
+            running    = _auto_state.get("running")
+        return {
+            "run_started_at": started_at.isoformat(),
+            "run_stopped_at": stopped_at,
+            "run_running":    running,
+            **counts,
         }
     finally:
         db.close()

@@ -424,56 +424,90 @@ function ServerAutoLoopPanel({ apiBase }) {
 }
 
 
-// ---- Full-day data export (downloads a zip of CSVs) ----
+// ---- Current-run data export (downloads a zip of CSVs) ----
+// Scoped to the auto-loop's most recent /algo/auto/start, not the full DB
+// history. Re-pressing Start defines a new run; the next download covers
+// only what was logged after that.
 function DataExportPanel({ apiBase }) {
   const [summary, setSummary] = useState(null);
   const [busy,    setBusy]    = useState(false);
+  const [error,   setError]   = useState("");
 
   async function refreshSummary() {
     try {
-      const res = await fetch(`${apiBase}/export/summary`);
+      const res = await fetch(`${apiBase}/export/run/summary`);
       if (res.ok) setSummary(await res.json());
     } catch {}
   }
-  useEffect(() => { refreshSummary(); }, [apiBase]);
+
+  useEffect(() => {
+    refreshSummary();
+    const id = setInterval(refreshSummary, 5000);
+    return () => clearInterval(id);
+  }, [apiBase]);
 
   async function downloadZip() {
     if (busy) return;
     setBusy(true);
+    setError("");
     try {
-      const res = await fetch(`${apiBase}/export/full?format=csv`);
+      const res = await fetch(`${apiBase}/export/run?format=csv`);
+      if (res.status === 404) {
+        setError("Start the auto-loop first — there's no run to download yet.");
+        return;
+      }
       if (!res.ok) throw new Error(`export failed: ${res.status}`);
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement("a");
       const ts   = new Date().toISOString().replace(/[:.]/g, "-");
       a.href = url;
-      a.download = `smartgrid-export-${ts}.zip`;
+      a.download = `smartgrid-run-${ts}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(String(e?.message || e));
     } finally {
       setBusy(false);
     }
   }
 
+  const startedAt = summary?.run_started_at;
+  const runActive = !!startedAt;
   const fmt = (s) => (s?.count ?? 0) + " rows";
+
   return (
     <div className="naive-host-panel" style={{ marginTop: 12 }}>
       <div className="naive-toolbar">
-        <strong>Full-day data export:</strong>
-        <button className="naive-host-save" onClick={downloadZip} disabled={busy}>
-          {busy ? "Preparing..." : "Download CSV zip"}
+        <strong>Current-run export:</strong>
+        <button
+          className="naive-host-save"
+          onClick={downloadZip}
+          disabled={busy || !runActive}
+          title={runActive ? "" : "Press Start on the server auto-loop first"}
+        >
+          {busy ? "Preparing..." : "Download CSV zip (this run)"}
         </button>
         <button className="naive-host-toggle" onClick={refreshSummary}>
-          Refresh counts
+          Refresh
         </button>
       </div>
-      {summary && (
-        <p className="naive-host-msg" style={{ marginTop: 6 }}>
-          grid: {fmt(summary.grid_snapshots)} · modules: {fmt(summary.module_snapshots)} · decisions: {fmt(summary.naive_decisions)}
-        </p>
+      <p className="naive-host-msg" style={{ marginTop: 6 }}>
+        {runActive ? (
+          <>
+            run started: {new Date(startedAt).toLocaleString()}
+            {summary?.run_running === false && " (stopped)"}
+            {" · "}
+            grid: {fmt(summary?.grid_snapshots)} · modules: {fmt(summary?.module_snapshots)} · decisions: {fmt(summary?.naive_decisions)}
+          </>
+        ) : (
+          "no run started yet — press Start on the server auto-loop above"
+        )}
+      </p>
+      {error && (
+        <p className="naive-apply-msg" style={{ color: "#c00" }}>{error}</p>
       )}
     </div>
   );
