@@ -34,11 +34,11 @@ app = FastAPI()
 
 MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "2"))
 MODULE_CMD_TARGETS = {
-    "pv": os.getenv("PICO_PV_URL", "http://192.168.137.21"),
-    "grid": os.getenv("PICO_GRID_URL", "http://192.168.137.22"),
-    "cap": os.getenv("PICO_CAP_URL", "http://192.168.137.23"),
-    "led": os.getenv("PICO_LED_URL", "http://192.168.137.24"),
-    "export": os.getenv("PICO_EXPORT_URL", "http://192.168.137.25"),
+    "pv": os.getenv("PICO_PV_URL", "http://192.168.137.24"),
+    "grid": os.getenv("PICO_GRID_URL", "http://192.168.137.23"),
+    "cap": os.getenv("PICO_CAP_URL", "http://192.168.137.21"),
+    "led": os.getenv("PICO_LED_URL", "http://192.168.137.25"),
+    "export": os.getenv("PICO_EXPORT_URL", "http://192.168.137.22"),
     "lux": os.getenv("PICO_LUX_URL", "http://192.168.137.26"),
 }
 MODULE_CMD_ROLES = tuple(MODULE_CMD_TARGETS.keys())
@@ -85,12 +85,17 @@ def _post_module_cmd(role, payload):
     parsed = urlparse(host)
     hostname = parsed.hostname
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    path = parsed.path.rstrip("/") + "/cmd"
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/cmd"
+    elif not path.endswith("/cmd"):
+        path += "/cmd"
     body = json.dumps(payload)
     req = (
         f"POST {path} HTTP/1.1\r\n"
         f"Host: {hostname}\r\n"
-        "Content-Type: text/plain;charset=UTF-8\r\n"
+        "Accept: application/json\r\n"
+        "Content-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\n"
         "Connection: close\r\n"
         "\r\n"
@@ -98,6 +103,7 @@ def _post_module_cmd(role, payload):
     ).encode("utf-8")
 
     try:
+        print(f"[cmd proxy] send {role} -> {host}/cmd payload={payload}")
         with socket.create_connection((hostname, port), timeout=MODULE_CMD_TIMEOUT) as sock:
             sock.sendall(req)
             resp = b""
@@ -113,6 +119,7 @@ def _post_module_cmd(role, payload):
         status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
         body_start = resp_text.find("\r\n\r\n")
         response_body = resp_text[body_start + 4 :] if body_start >= 0 else ""
+        print(f"[cmd proxy] result {role} -> {host}/cmd status={status_code} response={response_body[:200]!r}")
 
         return {
             "ok": 200 <= status_code < 300,
@@ -122,6 +129,7 @@ def _post_module_cmd(role, payload):
             "response": response_body[:200],
         }
     except OSError as exc:
+        print(f"[cmd proxy] error {role} -> {host}/cmd reason={exc}")
         return {
             "ok": False,
             "status": "error",

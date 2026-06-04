@@ -703,13 +703,13 @@ try:
         _print_cnt += 1
         if _print_cnt >= 500:
             _print_cnt = 0
-            print('[pv] Va={:.2f} Vb={:.3f} iL={:+.3f} P={:+.2f}W '
-                  'iref={:.3f} pwm={} mode={} irr={:.2f} vmpp_tgt={:.3f} '
-                  'po_dir={:+d} po_dp={:+.3f}'
-                  .format(_va, _vb_lp, _il_lp, _p_lp,
-                          _i_ref, int(_pwm_out), mode,
-                          _web_irradiance, vmp_target,
-                          _po_dir, _po_last_dp))
+            # print('[pv] Va={:.2f} Vb={:.3f} iL={:+.3f} P={:+.2f}W '
+            #       'iref={:.3f} pwm={} mode={} irr={:.2f} vmpp_tgt={:.3f} '
+            #       'po_dir={:+d} po_dp={:+.3f}'
+            #       .format(_va, _vb_lp, _il_lp, _p_lp,
+            #               _i_ref, int(_pwm_out), mode,
+            #               _web_irradiance, vmp_target,
+            #               _po_dir, _po_last_dp))
 
 except KeyboardInterrupt:
     print("\n[pv] interrupted -- entering safe state...")
