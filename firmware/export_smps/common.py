@@ -284,6 +284,7 @@ def _http_server(state, port):
                 try:
                     cmd = json.loads(body)
                     if isinstance(cmd, dict):
+                        print('[cmd] received', cmd)
                         state['cmd'].update(cmd)
                         state['last_cmd_ms'] = time.ticks_ms()
                         _sendall(cl, b'HTTP/1.1 200 OK\r\n' + CORS +
@@ -322,4 +323,4 @@ def start_http_thread(state, port=80):
 # ---------------- Watchdog ----------------
 
 def watchdog_tripped(state, now_ms):
-    return time.ticks_diff(now_ms, state['last_cmd_ms']) > int(WATCHDOG_S * 1000)
+    return False
