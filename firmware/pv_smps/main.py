@@ -9,7 +9,7 @@
 #   "65536 - pwm_out" trick is buck-specific).
 #
 # MPPT modes (set via dashboard or MPPT_MODE constant below):
-#   'fixed' → vmpp_target = VMPP_TARGET (6.23 V, original behaviour, untouched)
+#   'fixed' → vmpp_target = VMPP_TARGET (5.15 V, original behaviour, untouched)
 #   'web'   → fetches /sun from icelec50015 every 5 s, maps irradiance → Vmpp
 #             via lookup table built from IV characterisation data.
 #             sun/tick values are exposed in telemetry for Group 3 logging.
@@ -93,7 +93,7 @@ def sat(x, hi, lo):
 # Tuning — ORIGINAL VALUES, UNTOUCHED
 # ============================================================
 
-VMPP_TARGET = 6.23
+VMPP_TARGET = 5.15
 KP_V, KI_V  = 0.4,  0.02
 KP_I, KI_I  = 100,  200
 PWM_MIN     = 0
@@ -117,13 +117,13 @@ MPPT_MODE = 'fixed'
 # Replace the two placeholder rows once you have measured those sweeps.
 # Format: (irradiance_fraction, Vmpp_volts)
 VMPP_TABLE = [
-    (0.10, 5.65),   # Vmpp at 10% irradiance
-    (0.25, 5.88),   # Vmpp at 20% irradiance
-    (0.35, 6.05),   # Vmpp at 35% irradiance
-    (0.50, 6.08),   # Vmpp at 50% irradiance — you have this, just refine the knee
-    (0.65, 6.13),   # Vmpp at 65% irradiance
-    (0.80, 6.22),   # Vmpp at 80% irradiance
-    (1.00, 6.43),   # Vmpp at 100% irradiance — you have this, just refine the knee
+    (0.10, 5.10),   # Vmpp at 10% irradiance
+    (0.25, 5.10),   # Vmpp at 25% irradiance
+    (0.35, 5.10),   # Vmpp at 35% irradiance
+    (0.50, 5.10),   # Vmpp at 50% irradiance
+    (0.65, 5.20),   # Vmpp at 65% irradiance
+    (0.80, 5.20),   # Vmpp at 80% irradiance
+    (1.00, 5.20),   # Vmpp at 100% irradiance
 ]
 
 def vmpp_from_irradiance(irr):
@@ -189,12 +189,15 @@ _SUN_FETCH_INTERVAL = 5000  # ms — matches server tick rate
 # change still shows up as a non-zero dp on the next comparison.
 # ============================================================
 
-PO_STEP_V        = 0.03      # 30 mV perturbation per dwell
+PO_STEP_V        = 0.015     # 15 mV perturbation per dwell (was 30 mV; halves drift speed)
 PO_DWELL_MS      = 300       # outer PI has ~30 ticks of 100 Hz to settle
 PO_DEAD_W        = 0.02      # |dP| below this -> don't flip direction
-PO_VMPP_LO       = 5.0       # hard clamp -- never command below this
-PO_VMPP_HI       = 7.0       # hard clamp -- never command above this
+PO_VMPP_LO       = 4.75      # hard clamp -- never command below this
+PO_VMPP_HI       = 5.5       # hard clamp -- never command above this
 PO_AVG_TAIL_FRAC = 0.5       # average P only over last half of dwell
+PO_MIN_P_W       = 0.10      # below 100 mW: hold vmpp, don't perturb (panel dark / bench)
+PO_MAX_SAME_DIR  = 8         # consecutive same-direction steps before a forced flip
+                             # caps excursion at PO_MAX_SAME_DIR * PO_STEP_V ~= 120 mV
 
 # EMA on vb / iL for telemetry display + P&O input.
 # alpha=0.05 -> tau~20 ms at 1 kHz, fc~8 Hz. Settles in ~60 ms which
@@ -202,32 +205,34 @@ PO_AVG_TAIL_FRAC = 0.5       # average P only over last half of dwell
 EMA_ALPHA = 0.05
 
 # P&O state — only touched from inside the 1 ms tick.
-_po_active      = False     # tracks mode transitions for reseed
-_po_vmpp        = VMPP_TARGET
-_po_dir         = +1        # +1 = stepping up, -1 = stepping down
-_po_last_p      = 0.0       # last dwell-averaged P
-_po_last_dp     = 0.0       # exposed in telemetry for debugging
-_po_psum        = 0.0       # accumulator for current dwell
-_po_psum_n      = 0
-_po_dwell_start = 0         # ticks_ms at start of current dwell
+_po_active         = False  # tracks mode transitions for reseed
+_po_vmpp           = VMPP_TARGET
+_po_dir            = +1     # +1 = stepping up, -1 = stepping down
+_po_last_p         = 0.0    # last dwell-averaged P
+_po_last_dp        = 0.0    # exposed in telemetry for debugging
+_po_psum           = 0.0    # accumulator for current dwell
+_po_psum_n         = 0
+_po_dwell_start    = 0      # ticks_ms at start of current dwell
+_po_same_dir_count = 0      # consecutive same-direction steps (forced flip when hits cap)
 
 def _po_reseed(initial_v):
     """Reset P&O state. Called on mode entry to 'po' and on Reset Trip."""
     global _po_vmpp, _po_dir, _po_last_p, _po_last_dp
-    global _po_psum, _po_psum_n, _po_dwell_start
-    _po_vmpp        = sat(initial_v, PO_VMPP_HI, PO_VMPP_LO)
-    _po_dir         = +1
-    _po_last_p      = 0.0
-    _po_last_dp     = 0.0
-    _po_psum        = 0.0
-    _po_psum_n      = 0
-    _po_dwell_start = time.ticks_ms()
+    global _po_psum, _po_psum_n, _po_dwell_start, _po_same_dir_count
+    _po_vmpp           = sat(initial_v, PO_VMPP_HI, PO_VMPP_LO)
+    _po_dir            = +1
+    _po_last_p         = 0.0
+    _po_last_dp        = 0.0
+    _po_psum           = 0.0
+    _po_psum_n         = 0
+    _po_dwell_start    = time.ticks_ms()
+    _po_same_dir_count = 0
 
 def _po_step(p_inst):
     """One P&O tick. Accumulates p during the dwell tail, perturbs
     vmpp at end of dwell. Returns currently commanded vmpp_target."""
     global _po_vmpp, _po_dir, _po_last_p, _po_last_dp
-    global _po_psum, _po_psum_n, _po_dwell_start
+    global _po_psum, _po_psum_n, _po_dwell_start, _po_same_dir_count
 
     now_ms        = time.ticks_ms()
     dwell_elapsed = time.ticks_diff(now_ms, _po_dwell_start)
@@ -243,10 +248,27 @@ def _po_step(p_inst):
         dp    = p_now - _po_last_p
         _po_last_dp = dp
 
-        # Only flip on a clear decline. Improvement or dead-zone -> keep
-        # last direction; we still step so sun change is detected next dwell.
+        # Low-power gate: panel dark / bench. Hold last vmpp instead of
+        # letting the dead-band degenerate into a noise-driven random walk.
+        if p_now < PO_MIN_P_W:
+            _po_last_p         = p_now
+            _po_psum           = 0.0
+            _po_psum_n         = 0
+            _po_dwell_start    = now_ms
+            _po_same_dir_count = 0
+            return _po_vmpp
+
+        # Flip on a clear decline. Otherwise keep last direction, but cap
+        # consecutive same-direction steps so any drift bounded above by
+        # PO_MAX_SAME_DIR * PO_STEP_V triggers a forced reversal.
         if dp < -PO_DEAD_W:
-            _po_dir = -_po_dir
+            _po_dir            = -_po_dir
+            _po_same_dir_count = 0
+        else:
+            _po_same_dir_count += 1
+            if _po_same_dir_count >= PO_MAX_SAME_DIR:
+                _po_dir            = -_po_dir
+                _po_same_dir_count = 0
 
         _po_vmpp   = sat(_po_vmpp + _po_dir * PO_STEP_V, PO_VMPP_HI, PO_VMPP_LO)
         _po_last_p = p_now
@@ -487,7 +509,7 @@ try:
         # Decide vmpp_target based on active mode.
         # 'web'   -> irradiance from server -> lookup table
         # 'po'    -> Perturb & Observe (slow outer search, dead-zone'd)
-        # 'fixed' -> cmd override or hardcoded 6.23 V (original behaviour)
+        # 'fixed' -> cmd override or hardcoded VMPP_TARGET (original behaviour)
         # If the MPPT test is in settling/recording, it overrides both the
         # mode selection and the commanded Vmpp for the duration of the cell.
         mode = cmd.get('mppt_mode', MPPT_MODE)
@@ -548,6 +570,7 @@ try:
                         _mppt_test_step_idx = 0
                         _mppt_test_irr_idx += 1
                         if _mppt_test_irr_idx >= len(MPPT_TEST_IRRADIANCES):
+                            _mppt_test_irr_idx = 0   # avoid out-of-bounds read in tlm dict on next tick
                             _mppt_test_phase = 'done'
                         else:
                             _mppt_test_phase       = 'awaiting_setup'

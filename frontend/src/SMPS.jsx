@@ -253,6 +253,7 @@ function OverviewGraphCard({ data }) {
 }
 
 function NaiveDispatchCard({
+  apiBase,
   naive,
   applyBusy,
   applyMsg,
@@ -355,11 +356,126 @@ function NaiveDispatchCard({
       )}
 
       <button className="btn-pink" onClick={() => onApply()} disabled={applyBusy || !naive}>
-        {applyBusy ? "Applying..." : "Apply to cap + led modules"}
+        {applyBusy ? "Applying..." : "Apply to all 4 modules (cap, led, grid, export)"}
       </button>
 
       {applyMsg && <p className="naive-apply-msg">{applyMsg}</p>}
+
+      <ServerAutoLoopPanel apiBase={apiBase} />
+      <DataExportPanel    apiBase={apiBase} />
     </section>
+  );
+}
+
+
+// ---- Server-side auto-loop (runs on the backend, survives browser close) ----
+function ServerAutoLoopPanel({ apiBase }) {
+  const [status, setStatus] = useState(null);
+  const [busy,   setBusy]   = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(`${apiBase}/algo/auto/status`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setStatus(data);
+      } catch {}
+    }
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [apiBase]);
+
+  async function toggle() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const action = status?.running ? "stop" : "start";
+      await fetch(`${apiBase}/algo/auto/${action}`, { method: "POST" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const running = !!status?.running;
+  return (
+    <div className="naive-host-panel" style={{ marginTop: 12 }}>
+      <div className="naive-toolbar">
+        <strong>Server auto-loop:</strong>
+        <button className="naive-host-save" onClick={toggle} disabled={busy}>
+          {running ? "Stop" : "Start"}
+        </button>
+        <span className="naive-host-msg">
+          {running ? "running" : "stopped"}
+          {status?.last_regime && ` · last: ${status.last_regime}`}
+          {status?.applied_count != null &&
+            ` · applied=${status.applied_count} / skipped=${status.skipped_count}`}
+        </span>
+      </div>
+      {status?.last_error && (
+        <p className="naive-apply-msg" style={{ color: "#c00" }}>
+          error: {status.last_error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+
+// ---- Full-day data export (downloads a zip of CSVs) ----
+function DataExportPanel({ apiBase }) {
+  const [summary, setSummary] = useState(null);
+  const [busy,    setBusy]    = useState(false);
+
+  async function refreshSummary() {
+    try {
+      const res = await fetch(`${apiBase}/export/summary`);
+      if (res.ok) setSummary(await res.json());
+    } catch {}
+  }
+  useEffect(() => { refreshSummary(); }, [apiBase]);
+
+  async function downloadZip() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/export/full?format=csv`);
+      if (!res.ok) throw new Error(`export failed: ${res.status}`);
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      const ts   = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `smartgrid-export-${ts}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const fmt = (s) => (s?.count ?? 0) + " rows";
+  return (
+    <div className="naive-host-panel" style={{ marginTop: 12 }}>
+      <div className="naive-toolbar">
+        <strong>Full-day data export:</strong>
+        <button className="naive-host-save" onClick={downloadZip} disabled={busy}>
+          {busy ? "Preparing..." : "Download CSV zip"}
+        </button>
+        <button className="naive-host-toggle" onClick={refreshSummary}>
+          Refresh counts
+        </button>
+      </div>
+      {summary && (
+        <p className="naive-host-msg" style={{ marginTop: 6 }}>
+          grid: {fmt(summary.grid_snapshots)} · modules: {fmt(summary.module_snapshots)} · decisions: {fmt(summary.naive_decisions)}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -510,9 +626,12 @@ export default function SmpsModules({ apiBase }) {
       }
 
       if (!silent) {
-        const capState = data?.applied?.cap?.ok ? "cap ok" : "cap failed";
-        const ledState = data?.applied?.led?.ok ? "led ok" : "led failed";
-        setApplyMsg(`${capState}, ${ledState}`);
+        const parts = ["cap", "led", "grid", "export"].map((r) => {
+          const ok = data?.applied?.[r]?.ok;
+          return `${r} ${ok ? "ok" : "✗"}`;
+        });
+        const regime = data?.recommendation?.regime;
+        setApplyMsg(`${regime ?? "?"}: ${parts.join(", ")}`);
       }
       return true;
     } catch (err) {

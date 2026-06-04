@@ -1,14 +1,34 @@
+import csv
+import io
 import json
 import os
 import socket
+import sys
 import threading
+import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from sqlalchemy import desc
-from db import (SessionLocal, GridSnapshot, ModuleSnapshot,
-                init_db, save_module_snapshot)
-from datetime import datetime
+
+from db import (SessionLocal, GridSnapshot, ModuleSnapshot, NaiveDecision,
+                init_db, save_module_snapshot, save_naive_decision)
+
+# Make sibling `buysellalgorithm/` importable.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from buysellalgorithm.naive import (  # noqa: E402
+    decide as naive_decide,
+    state_from_db_rows as naive_state_from_db_rows,
+    commands_to_payloads as naive_commands_to_payloads,
+)
 
 app = FastAPI()
 
@@ -209,109 +229,44 @@ def set_module_hosts(payload: dict):
 
 
 def _run_naive_from_db(grid_row, module_rows):
-    if grid_row is None:
-        return {
-            "error": "No grid snapshot available",
-        }
+    """Thin adapter: pulls rows → builds a GridState → calls naive.decide() →
+    formats the response shape the frontend expects.
 
-    pv_row = module_rows.get("pv")
+    All policy lives in buysellalgorithm/naive.py — keep it there.
+    """
+    if grid_row is None:
+        return {"error": "No grid snapshot available"}
+
+    pv_row  = module_rows.get("pv")
     cap_row = module_rows.get("cap")
 
-    tick = _i(grid_row.tick, 0)
-    pv_power = max(0.0, _f(getattr(pv_row, "p_panel", None), 0.0))
-    demand = max(0.0, _f(grid_row.instant_demand, 0.0))
+    state = naive_state_from_db_rows(grid_row, pv_row, cap_row)
+    if state is None:
+        return {"error": "No grid snapshot available"}
 
-    deferables = json.loads(str(grid_row.deferables_json or "[]"))
-    if not isinstance(deferables, list):
-        deferables = []
-
-    vbus = _f(getattr(cap_row, "vb_bus", None), 0.0)
-    if vbus <= 0:
-        vbus = _f(getattr(pv_row, "vb_bus", None), 0.0)
-    if vbus <= 0:
-        vbus = 9.5
-
-    energy_cap = max(0.0, _f(getattr(cap_row, "energy_J", None), 0.0))
-
-    led_total_power = 0.0
-    cap_i_cmd = 0.0
-    power_left = max(0.0, pv_power - demand)
-    served_deferrables = []
-
-    if pv_power > demand:
-        # Earliest-deadline-first service for active deferrable jobs.
-        candidates = []
-        for idx, item in enumerate(deferables):
-            if not isinstance(item, dict):
-                continue
-            start_tick = _get_window_tick(item, "tick_start", "start")
-            end_tick = _get_window_tick(item, "tick_end", "end")
-            start_tick = _i(start_tick)
-            end_tick = _i(end_tick)
-            if start_tick is None or end_tick is None:
-                continue
-            candidates.append((end_tick, idx, start_tick, dict(item)))
-
-        for _, idx, start_tick, job in sorted(candidates, key=lambda x: x[0]):
-            if power_left <= 0:
-                break
-
-            end_tick = _i(_get_window_tick(job, "tick_end", "end"))
-            if end_tick is None:
-                continue
-            if not (start_tick <= tick <= end_tick):
-                continue
-
-            energy = max(0.0, _f(job.get("energy"), 0.0))
-            if energy <= 0:
-                continue
-
-            served = min(energy, power_left)
-            remaining = energy - served
-            power_left -= served
-
-            served_deferrables.append(
-                {
-                    "index": idx,
-                    "served_energy": served,
-                    "remaining_energy": remaining,
-                    "tick_start": start_tick,
-                    "tick_end": end_tick,
-                }
-            )
-
-        led_total_power = pv_power - power_left
-        cap_i_cmd = power_left / vbus if power_left > 0 else 0.0
-    elif energy_cap > 0:
-        led_total_power = demand
-        cap_i_cmd = -0.60
-    else:
-        led_total_power = pv_power
-        cap_i_cmd = 0.0
-
-    led_each = led_total_power / 3.0
+    cmd = naive_decide(state)
+    payloads = naive_commands_to_payloads(cmd)
 
     return {
-        "tick": tick,
+        "tick":   state.tick,
+        "regime": cmd.regime,
         "inputs": {
-            "pv_power_W": pv_power,
-            "demand_W": demand,
-            "vbus_V": vbus,
-            "energy_cap_J": energy_cap,
-            "deferables_count": len(deferables),
+            "pv_power_W":       state.pv_p,
+            "demand_W":         state.demand_p,
+            "vbus_V":           state.vbus,
+            "v_cap_V":          state.v_cap,
+            "energy_cap_J":     state.energy_cap,
+            "deferables_count": len(state.deferrables),
         },
         "suggested": {
-            "cap": {
-                "i_cmd": round(cap_i_cmd, 4),
-            },
-            "led": {
-                "p_red": round(led_each, 4),
-                "p_yel": round(led_each, 4),
-                "p_grn": round(led_each, 4),
-            },
+            "cap":    payloads["cap"],
+            "led":    payloads["led"],
+            "grid":   payloads["grid"],
+            "export": payloads["export"],
         },
-        "served_deferrables": served_deferrables,
-        "remaining_surplus_W": round(max(0.0, power_left), 4),
+        "served_deferrables":   cmd.served_deferrables,
+        "remaining_surplus_W":  round(cmd.surplus_W, 4),
+        "remaining_deficit_W":  round(cmd.deficit_W, 4),
     }
 
 
@@ -555,8 +510,117 @@ def get_naive_recommendation():
         db.close()
 
 
+def _compute_and_apply_naive(db, log_decision=False):
+    """Pull latest state, compute the naive recommendation, dispatch to all
+    four actuators in parallel, optionally log the decision to the DB.
+
+    Returns a dict with keys: ok, recommendation, applied. If there is no
+    grid snapshot yet, returns {"error": ...}.
+
+    Note: grid + export are ALWAYS enabled (passive symmetric-droop safety
+    net). The naive only varies cap.i_cmd and LED setpoints; grid/export
+    flow current only when cap saturates and the bus leaves the 9.9–10.1 V
+    deadband.
+    """
+    grid_row = (
+        db.query(GridSnapshot)
+        .order_by(desc(GridSnapshot.id))
+        .first()
+    )
+
+    module_rows = {}
+    for role in ["pv", "cap"]:
+        module_rows[role] = (
+            db.query(ModuleSnapshot)
+            .filter(ModuleSnapshot.role == role)
+            .order_by(desc(ModuleSnapshot.id))
+            .first()
+        )
+
+    recommendation = _run_naive_from_db(grid_row, module_rows)
+    if "error" in recommendation:
+        return {"error": recommendation["error"]}
+
+    suggested = recommendation.get("suggested", {}) or {}
+    targets = {}
+    for role in ("cap", "led", "grid", "export"):
+        payload = suggested.get(role, {})
+        targets[role] = payload if isinstance(payload, dict) else {}
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {
+            role: ex.submit(_post_module_cmd, role, payload)
+            for role, payload in targets.items()
+        }
+        applied = {role: fut.result() for role, fut in futures.items()}
+
+    all_ok = all(bool(r.get("ok")) for r in applied.values())
+
+    if log_decision:
+        try:
+            save_naive_decision({
+                "tick":           recommendation.get("tick"),
+                "regime":         recommendation.get("regime"),
+                "all_ok":         all_ok,
+                "inputs":         recommendation.get("inputs", {}),
+                "recommendation": recommendation,
+                "applied":        applied,
+            })
+        except Exception as exc:
+            print(f"[naive] decision log failed: {exc}")
+
+    return {
+        "ok":             all_ok,
+        "recommendation": recommendation,
+        "applied":        applied,
+    }
+
+
 @app.post("/algo/naive/apply")
 def apply_naive_recommendation():
+    db = SessionLocal()
+    try:
+        result = _compute_and_apply_naive(db, log_decision=True)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    finally:
+        db.close()
+
+
+# ============================================================
+# Phase 4: Naive auto-loop
+# ============================================================
+# Background worker that re-runs the naive policy on every new Azure tick
+# and dispatches commands to the four actuators. Watches /modules/status
+# style health (snapshot freshness, module trips) and skips the apply when
+# anything looks wrong, so a single bad tick doesn't push unsafe setpoints.
+
+_AUTO_POLL_S  = float(os.getenv("AUTO_NAIVE_POLL_S",  "1.0"))
+_AUTO_STALE_S = float(os.getenv("AUTO_NAIVE_STALE_S", "15.0"))
+
+_auto_lock       = threading.Lock()
+_auto_stop_event = threading.Event()
+_auto_thread     = None
+_auto_state = {
+    "running":           False,
+    "started_at":        None,
+    "stopped_at":        None,
+    "last_tick_applied": None,
+    "last_action_at":    None,
+    "last_regime":       None,
+    "last_result":       None,    # short summary dict of last iteration
+    "last_error":        None,
+    "applied_count":     0,
+    "skipped_count":     0,
+    "poll_s":            _AUTO_POLL_S,
+    "stale_s":           _AUTO_STALE_S,
+}
+
+
+def _auto_loop_iteration():
+    """One iteration of the auto-loop. Returns a small dict describing
+    what happened ({action: applied|skipped, reason: ..., ...})."""
     db = SessionLocal()
     try:
         grid_row = (
@@ -564,41 +628,306 @@ def apply_naive_recommendation():
             .order_by(desc(GridSnapshot.id))
             .first()
         )
+        if grid_row is None:
+            return {"action": "skipped", "reason": "no_grid_snapshot"}
 
-        module_rows = {}
-        for role in ["pv", "cap"]:
-            module_rows[role] = (
+        # Skip if we've already applied this tick.
+        with _auto_lock:
+            last_applied = _auto_state["last_tick_applied"]
+        if last_applied == grid_row.tick:
+            return {"action": "skipped", "reason": "tick_already_applied",
+                    "tick": grid_row.tick}
+
+        # Skip if the grid snapshot is too old (poller stalled / Azure down).
+        age_s = (datetime.utcnow() - grid_row.timestamp).total_seconds()
+        if age_s > _AUTO_STALE_S:
+            return {"action": "skipped", "reason": "snapshot_stale",
+                    "age_s": round(age_s, 2)}
+
+        # Skip if any actuator module is currently tripped.
+        for role in ("cap", "led", "grid", "export"):
+            row = (
                 db.query(ModuleSnapshot)
                 .filter(ModuleSnapshot.role == role)
                 .order_by(desc(ModuleSnapshot.id))
                 .first()
             )
+            if row is not None and row.trip:
+                return {"action": "skipped", "reason": f"{role}_tripped",
+                        "trip_reason": row.trip_reason}
 
-        recommendation = _run_naive_from_db(grid_row, module_rows)
-        if "error" in recommendation:
-            raise HTTPException(status_code=404, detail=recommendation["error"])
+        # Compute + apply + log.
+        result = _compute_and_apply_naive(db, log_decision=True)
+        if "error" in result:
+            return {"action": "skipped", "reason": result["error"]}
 
-        suggested = recommendation.get("suggested", {})
-        if not isinstance(suggested, dict):
-            suggested = {}
+        rec = result.get("recommendation", {}) or {}
+        return {
+            "action":  "applied",
+            "tick":    rec.get("tick"),
+            "regime":  rec.get("regime"),
+            "all_ok":  result.get("ok"),
+            "inputs":  rec.get("inputs", {}),
+        }
+    finally:
+        db.close()
 
-        cap_payload = suggested.get("cap", {})
-        led_payload = suggested.get("led", {})
-        if not isinstance(cap_payload, dict):
-            cap_payload = {}
-        if not isinstance(led_payload, dict):
-            led_payload = {}
 
-        cap_result = _post_module_cmd("cap", cap_payload)
-        led_result = _post_module_cmd("led", led_payload)
+def _auto_loop_worker():
+    """Long-running thread body. Polls every _AUTO_POLL_S seconds, calls
+    one iteration, updates the published _auto_state, and sleeps."""
+    while not _auto_stop_event.is_set():
+        try:
+            result = _auto_loop_iteration()
+            with _auto_lock:
+                _auto_state["last_action_at"] = datetime.utcnow().isoformat()
+                _auto_state["last_result"]    = result
+                if result.get("action") == "applied":
+                    _auto_state["applied_count"]    += 1
+                    _auto_state["last_tick_applied"] = result.get("tick")
+                    _auto_state["last_regime"]       = result.get("regime")
+                    _auto_state["last_error"]        = None
+                else:
+                    _auto_state["skipped_count"] += 1
+        except Exception as exc:
+            with _auto_lock:
+                _auto_state["last_error"] = str(exc)
+            print(f"[naive auto] iteration error: {exc}")
+        # Use Event.wait so /algo/auto/stop returns quickly.
+        _auto_stop_event.wait(_AUTO_POLL_S)
+
+
+@app.post("/algo/auto/start")
+def auto_naive_start():
+    global _auto_thread
+    with _auto_lock:
+        if _auto_state["running"]:
+            return {"ok": True, "already_running": True,
+                    "state": dict(_auto_state)}
+        _auto_stop_event.clear()
+        _auto_state["running"]       = True
+        _auto_state["started_at"]    = datetime.utcnow().isoformat()
+        _auto_state["stopped_at"]    = None
+        _auto_state["applied_count"] = 0
+        _auto_state["skipped_count"] = 0
+        _auto_state["last_error"]    = None
+
+    _auto_thread = threading.Thread(
+        target=_auto_loop_worker, name="naive-auto-loop", daemon=True
+    )
+    _auto_thread.start()
+    return {"ok": True, "state": dict(_auto_state)}
+
+
+@app.post("/algo/auto/stop")
+def auto_naive_stop():
+    with _auto_lock:
+        if not _auto_state["running"]:
+            return {"ok": True, "already_stopped": True,
+                    "state": dict(_auto_state)}
+        _auto_stop_event.set()
+        _auto_state["running"]    = False
+        _auto_state["stopped_at"] = datetime.utcnow().isoformat()
+    return {"ok": True, "state": dict(_auto_state)}
+
+
+@app.get("/algo/auto/status")
+def auto_naive_status():
+    with _auto_lock:
+        return dict(_auto_state)
+
+
+# ============================================================
+# Phase 5: Full-day data export
+# ============================================================
+# Dumps every table (grid snapshots, module snapshots, naive decisions)
+# for the requested time range. Two formats:
+#   format=json (default) — single JSON document, good for programmatic use
+#   format=csv            — zip of three CSVs, good for opening in Excel
+#
+# Range can be specified with ?since=<ISO> and ?until=<ISO>, or with
+# ?last_hours=N (overrides since/until). Default: everything.
+
+def _grid_row_to_dict(row):
+    return {
+        "id":             row.id,
+        "timestamp":      row.timestamp.isoformat(),
+        "day":            row.day,
+        "tick":           row.tick,
+        "sun":            row.sun,
+        "buy_price":      row.buy_price,
+        "sell_price":     row.sell_price,
+        "instant_demand": row.instant_demand,
+        "deferables":     json.loads(str(row.deferables_json or "[]")),
+    }
+
+
+def _decision_row_to_dict(row):
+    return {
+        "id":             row.id,
+        "timestamp":      row.timestamp.isoformat(),
+        "tick":           row.tick,
+        "regime":         row.regime,
+        "all_ok":         bool(row.all_ok),
+        "inputs":         json.loads(str(row.inputs_json or "{}")),
+        "recommendation": json.loads(str(row.recommendation_json or "{}")),
+        "applied":        json.loads(str(row.applied_json or "{}")),
+    }
+
+
+def _parse_iso(s):
+    if not s:
+        return None
+    try:
+        # Accept both "Z" and offset-less ISO strings.
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"Bad ISO timestamp: {s!r}")
+
+
+def _query_export(db, since=None, until=None, last_hours=None):
+    if last_hours is not None and last_hours > 0:
+        since = datetime.utcnow().timestamp() - (float(last_hours) * 3600.0)
+        since = datetime.utcfromtimestamp(since)
+        until = None
+    else:
+        since = _parse_iso(since)
+        until = _parse_iso(until)
+
+    g_q = db.query(GridSnapshot)
+    m_q = db.query(ModuleSnapshot)
+    d_q = db.query(NaiveDecision)
+    if since is not None:
+        g_q = g_q.filter(GridSnapshot.timestamp   >= since)
+        m_q = m_q.filter(ModuleSnapshot.timestamp >= since)
+        d_q = d_q.filter(NaiveDecision.timestamp  >= since)
+    if until is not None:
+        g_q = g_q.filter(GridSnapshot.timestamp   <= until)
+        m_q = m_q.filter(ModuleSnapshot.timestamp <= until)
+        d_q = d_q.filter(NaiveDecision.timestamp  <= until)
+
+    return (
+        g_q.order_by(GridSnapshot.id).all(),
+        m_q.order_by(ModuleSnapshot.id).all(),
+        d_q.order_by(NaiveDecision.id).all(),
+        since,
+        until,
+    )
+
+
+@app.get("/export/full")
+def export_full(format: str = "json",
+                since: str = None,
+                until: str = None,
+                last_hours: float = None):
+    db = SessionLocal()
+    try:
+        grid_rows, mod_rows, dec_rows, since_dt, until_dt = _query_export(
+            db, since=since, until=until, last_hours=last_hours
+        )
+
+        meta = {
+            "exported_at":      datetime.utcnow().isoformat(),
+            "since":            since_dt.isoformat() if since_dt else None,
+            "until":            until_dt.isoformat() if until_dt else None,
+            "grid_count":       len(grid_rows),
+            "module_count":     len(mod_rows),
+            "decision_count":   len(dec_rows),
+        }
+
+        if format == "csv":
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                # Grid snapshots
+                s = io.StringIO()
+                w = csv.writer(s)
+                w.writerow(["id", "timestamp", "day", "tick", "sun",
+                            "buy_price", "sell_price", "instant_demand",
+                            "deferables_json"])
+                for r in grid_rows:
+                    w.writerow([r.id, r.timestamp.isoformat(), r.day, r.tick,
+                                r.sun, r.buy_price, r.sell_price,
+                                r.instant_demand, r.deferables_json])
+                zf.writestr("grid_snapshots.csv", s.getvalue())
+
+                # Module snapshots (all columns, one row per snapshot)
+                s = io.StringIO()
+                w = csv.writer(s)
+                cols = [c.name for c in ModuleSnapshot.__table__.columns]
+                w.writerow(cols)
+                for r in mod_rows:
+                    row_vals = []
+                    for c in cols:
+                        v = getattr(r, c)
+                        if isinstance(v, datetime):
+                            v = v.isoformat()
+                        row_vals.append(v)
+                    w.writerow(row_vals)
+                zf.writestr("module_snapshots.csv", s.getvalue())
+
+                # Naive decisions
+                s = io.StringIO()
+                w = csv.writer(s)
+                w.writerow(["id", "timestamp", "tick", "regime", "all_ok",
+                            "inputs_json", "recommendation_json",
+                            "applied_json"])
+                for r in dec_rows:
+                    w.writerow([r.id, r.timestamp.isoformat(), r.tick,
+                                r.regime, r.all_ok,
+                                r.inputs_json, r.recommendation_json,
+                                r.applied_json])
+                zf.writestr("naive_decisions.csv", s.getvalue())
+
+                # Manifest so future-you knows what generated this zip
+                zf.writestr("manifest.json", json.dumps(meta, indent=2))
+
+            buf.seek(0)
+            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            return Response(
+                content=buf.read(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="smartgrid-export-{ts}.zip"'
+                },
+            )
+
+        # JSON format
+        return {
+            **meta,
+            "grid_snapshots":   [_grid_row_to_dict(r)     for r in grid_rows],
+            "module_snapshots": [_module_row_dict(r)      for r in mod_rows],
+            "naive_decisions":  [_decision_row_to_dict(r) for r in dec_rows],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/export/summary")
+def export_summary():
+    """Lightweight counts + earliest/latest timestamps. Useful before
+    triggering a heavy /export/full call."""
+    db = SessionLocal()
+    try:
+        def first_last(q, col):
+            first = q.order_by(col.asc()).first()
+            last  = q.order_by(col.desc()).first()
+            return (
+                first.timestamp.isoformat() if first else None,
+                last.timestamp.isoformat()  if last  else None,
+            )
+
+        grid_first, grid_last = first_last(db.query(GridSnapshot),   GridSnapshot.timestamp)
+        mod_first,  mod_last  = first_last(db.query(ModuleSnapshot), ModuleSnapshot.timestamp)
+        dec_first,  dec_last  = first_last(db.query(NaiveDecision),  NaiveDecision.timestamp)
 
         return {
-            "ok": bool(cap_result.get("ok") and led_result.get("ok")),
-            "recommendation": recommendation,
-            "applied": {
-                "cap": cap_result,
-                "led": led_result,
-            },
+            "grid_snapshots":   {"count": db.query(GridSnapshot).count(),
+                                 "first": grid_first, "last": grid_last},
+            "module_snapshots": {"count": db.query(ModuleSnapshot).count(),
+                                 "first": mod_first,  "last": mod_last},
+            "naive_decisions":  {"count": db.query(NaiveDecision).count(),
+                                 "first": dec_first,  "last": dec_last},
         }
     finally:
         db.close()

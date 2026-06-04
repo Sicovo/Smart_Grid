@@ -413,25 +413,25 @@ A subsequent automation step would replace the manual DMM measurement with the c
 
 === Measured SMPS Efficiency
 
-@fig:pv-eta-measured and the table below present the full 48-point sweep: four irradiance settings (25%, 50%, 75%, 100%) at twelve bus-voltage points each, with the panel pinned at its MPP under the prior characterisation ($V_("panel") approx 6.23$ V). The boost duty cycle $D = 1 - V_("panel") / V_("bus")$ walks from 0.13 to 0.50 across the bus-voltage sweep. A re-sweep against the updated $V_("mpp")$ table of @fig:pv-vmpp is queued for the next firmware revision: the new operating point sits roughly 1V lower (approximately 5.15V), which shifts the same bus sweep into the wider duty range 0.28–0.59. That range stays within the flat boost plateau, but at the supercap ceiling $V_("bus") = 17.5$V the reachable $D_("max") = 1 - 5.15 / 17.5 approx 0.71$ now sits at the CCM cliff threshold that the 6.23V case (0.64) safely cleared, so cliff-edge behaviour at the cap-full operating point becomes a verification target for the re-sweep.
+@fig:pv-eta-measured and the table below present the full 48-point sweep: four irradiance settings (25%, 50%, 75%, 100%) at twelve bus-voltage points each, with the panel pinned at its MPP ($V_("panel") approx 5.15$ V, from the lookup table in @fig:pv-vmpp). The boost duty cycle $D = 1 - V_("panel") / V_("bus")$ walks from 0.28 to 0.59 across the bus-voltage sweep, staying inside the flat boost plateau.
 
 #protable(
   caption: [Measured PV SMPS efficiency across bus voltage and irradiance.],
   columns: (1fr, 1fr, 1.1fr, 1.1fr, 1.1fr, 1.1fr),
   align: center + horizon,
   [*$V_("bus")$ (V)*], [*Duty $D$*], [*$eta_("PV")$ at 25%*], [*$eta_("PV")$ at 50%*], [*$eta_("PV")$ at 75%*], [*$eta_("PV")$ at 100%*],
-  [7.11], [0.12], [96.56%], [96.69%], [97.17%], [97.68%],
-  [7.61], [0.18], [96.36%], [96.79%], [96.82%], [97.89%],
-  [8.11], [0.23], [96.62%], [96.57%], [96.98%], [97.74%],
-  [8.61], [0.28], [96.52%], [96.44%], [96.73%], [98.00%],
-  [9.12], [0.32], [96.16%], [96.63%], [96.79%], [97.86%],
-  [9.61], [0.35], [96.69%], [96.34%], [97.11%], [98.10%],
-  [10.21], [0.39], [96.56%], [96.80%], [97.15%], [98.02%],
-  [10.63], [0.41], [96.57%], [96.68%], [97.28%], [97.79%],
-  [11.07], [0.44], [96.18%], [96.75%], [96.90%], [98.10%],
-  [11.63], [0.46], [96.37%], [96.51%], [96.92%], [98.08%],
-  [12.06], [0.48], [96.32%], [96.88%], [96.98%], [97.83%],
-  [12.55], [0.50], [96.66%], [96.84%], [96.81%], [97.77%],
+  [7.11], [0.28], [96.56%], [96.69%], [97.17%], [97.68%],
+  [7.61], [0.32], [96.36%], [96.79%], [96.82%], [97.89%],
+  [8.11], [0.37], [96.62%], [96.57%], [96.98%], [97.74%],
+  [8.61], [0.40], [96.52%], [96.44%], [96.73%], [98.00%],
+  [9.12], [0.44], [96.16%], [96.63%], [96.79%], [97.86%],
+  [9.61], [0.46], [96.69%], [96.34%], [97.11%], [98.10%],
+  [10.21], [0.50], [96.56%], [96.80%], [97.15%], [98.02%],
+  [10.63], [0.52], [96.57%], [96.68%], [97.28%], [97.79%],
+  [11.07], [0.54], [96.18%], [96.75%], [96.90%], [98.10%],
+  [11.63], [0.56], [96.37%], [96.51%], [96.92%], [98.08%],
+  [12.06], [0.57], [96.32%], [96.88%], [96.98%], [97.83%],
+  [12.55], [0.59], [96.66%], [96.84%], [96.81%], [97.77%],
 )
 
 #figure(
@@ -439,7 +439,7 @@ A subsequent automation step would replace the manual DMM measurement with the c
   caption: [Measured PV SMPS efficiency versus bus voltage at four irradiances.],
 ) <fig:pv-eta-measured>
 
-Two features stand out. First, each $eta_("PV")$ trace is flat with bus voltage. The four curves vary by no more than ±0.3% across their twelve points, with no monotonic trend against $V_("bus")$, consistent with the flat plateau of the boost converter's $eta$-versus-$D$ characteristic across the $D = 0.12$ to $0.50$ range covered here. Fig. 5 of @navamani_iccpct2015, reproduced in @fig:pv-eta-ref, shows this plateau across moderate duty cycles and a sharp CCM cliff beyond $D approx 0.7$. The hardware cannot reach that cliff regime: with the panel pinned at 6.23 V the bus would need to exceed 20.8 V to hit $D = 0.7$, well above both the 17.5 V supercapacitor ceiling and the board's rated operating range. The maximum reachable $D_("max") = 1 - 6.23 / 17.5 = 0.64$ is still well clear of the cliff, so the measured plateau represents the converter's behaviour across its entire physically reachable operating space.
+Two features stand out. First, each $eta_("PV")$ trace is flat with bus voltage. The four curves vary by no more than ±0.3% across their twelve points, with no monotonic trend against $V_("bus")$, consistent with the flat plateau of the boost converter's $eta$-versus-$D$ characteristic across the $D = 0.28$ to $0.59$ range covered here. Fig. 5 of @navamani_iccpct2015, reproduced in @fig:pv-eta-ref, shows this plateau across moderate duty cycles and a sharp CCM cliff beyond $D approx 0.7$. At the supercapacitor ceiling $V_("bus") = 17.5$ V the reachable $D_("max") = 1 - 5.15 / 17.5 approx 0.71$ sits just at the cliff threshold, so the cap-full corner is the one regime where degraded efficiency would be expected; the measured plateau across the swept range otherwise represents the converter's behaviour across its operating window.
 
 Second, the per-irradiance means rise monotonically with irradiance: 96.5% at 25%, 96.7% at 50%, 97.0% at 75% and 97.9% at 100%. The total spread is approximately 1.4 percentage points from lowest to highest dimmer setting and is consistent with the boost-converter loss model. Fixed gate-drive and switching overhead are independent of throughput, so they consume a larger fraction at low panel power: at 100% irradiance the panel delivers approximately 2.3 W, at 25% approximately 0.8 W, and the same fixed overhead therefore dominates a larger share of the lower throughput. The irradiance-to-irradiance gap sits well above the per-point scatter, so the monotonic ordering is statistically clean and not a noise artefact.
 

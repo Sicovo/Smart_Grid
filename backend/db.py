@@ -84,6 +84,24 @@ class ModuleSnapshot(Base):
     p_grn = Column(Float)
 
 
+class NaiveDecision(Base):
+    """One row per naive auto-loop iteration that produced a /cmd dispatch.
+    Used to reconstruct the full-day decision history offline."""
+    __tablename__ = "naive_decisions"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    timestamp  = Column(DateTime, default=datetime.utcnow)
+    tick       = Column(Integer, index=True)
+    regime     = Column(String)         # "surplus" / "deficit" / "idle"
+    all_ok     = Column(Integer)        # 1 if all four module POSTs succeeded
+    # Snapshot of inputs that fed the decision (pv_p, demand, vbus, v_cap, ...)
+    inputs_json         = Column(String)
+    # Full recommendation dict (suggested setpoints + diagnostic fields)
+    recommendation_json = Column(String)
+    # Per-module response from _post_module_cmd
+    applied_json        = Column(String)
+
+
 def _fi(v):
     """Return float or None, safely coercing from any JSON-decoded type."""
     try:
@@ -184,4 +202,24 @@ def save_module_snapshot(payload):
     db.add(snap)
     db.commit()
     db.close()
+    return True
+
+
+def save_naive_decision(decision):
+    """Persist one naive decision. ``decision`` is a dict with keys:
+    tick, regime, all_ok, inputs, recommendation, applied."""
+    db = SessionLocal()
+    try:
+        row = NaiveDecision(
+            tick                = _ii(decision.get("tick")),
+            regime              = _si(decision.get("regime")),
+            all_ok              = 1 if decision.get("all_ok") else 0,
+            inputs_json         = json.dumps(decision.get("inputs", {})),
+            recommendation_json = json.dumps(decision.get("recommendation", {})),
+            applied_json        = json.dumps(decision.get("applied", {})),
+        )
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
     return True
