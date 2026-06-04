@@ -1519,3 +1519,372 @@ textarea {
     text-align: left;
   }
 }
+
+/* ===== SMPS MODULES STANDALONE: stable 5-column fit =====
+   This replaces the previous compact block. It keeps all 5 modules on one
+   viewport without the broken overlap/horizontal scroll. */
+
+.smps-standalone-page {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #11002f;
+  color: #f4efff;
+  box-sizing: border-box;
+}
+
+/* Scale the whole SMPS dashboard instead of forcing every child to tiny sizes.
+   This preserves chart/card proportions and avoids the layout getting messy. */
+.smps-standalone-page .smps-root {
+  --smps-scale: 0.74;
+  width: calc(100vw / var(--smps-scale));
+  height: calc(100vh / var(--smps-scale));
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 12px !important;
+  transform: scale(var(--smps-scale));
+  transform-origin: top left;
+  box-sizing: border-box;
+}
+
+/* Top controls */
+.smps-standalone-page .smps-top-actions {
+  height: 30px;
+  margin: 0 0 8px 0 !important;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.smps-standalone-page .smps-host-toggle,
+.smps-standalone-page .smps-host-save,
+.smps-standalone-page .smps-btn {
+  font-size: 11px;
+  padding: 5px 10px;
+  min-height: 26px;
+  border-radius: 7px;
+}
+
+.smps-standalone-page .smps-last-updated {
+  margin-left: auto;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Bus gauge */
+.smps-standalone-page .smps-gauge {
+  margin: 0 0 8px 0 !important;
+  padding: 10px 14px !important;
+  border-radius: 10px;
+}
+
+.smps-standalone-page .smps-gauge-top {
+  margin-bottom: 5px;
+}
+
+.smps-standalone-page .smps-gauge-v b {
+  font-size: 24px !important;
+}
+
+.smps-standalone-page .smps-gauge-bar {
+  height: 16px !important;
+}
+
+.smps-standalone-page .smps-gauge-scale {
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+/* Global chart */
+.smps-standalone-page .smps-global-chart {
+  margin: 0 0 10px 0 !important;
+  padding: 10px !important;
+  border-radius: 10px;
+}
+
+.smps-standalone-page .smps-chart-head {
+  margin-bottom: 6px;
+}
+
+.smps-standalone-page .smps-chart-title {
+  font-size: 15px;
+}
+
+.smps-standalone-page .smps-global-chart .smps-chart-legend {
+  gap: 6px;
+}
+
+.smps-standalone-page .smps-legend-toggle {
+  font-size: 10px;
+  padding: 4px 8px;
+}
+
+.smps-standalone-page .smps-chart-box {
+  height: 116px !important;
+  padding: 4px !important;
+  overflow: hidden;
+}
+
+.smps-standalone-page .smps-chart-box .recharts-responsive-container {
+  height: 116px !important;
+}
+
+.smps-standalone-page .smps-chart-foot {
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+/* Five module cards in one row */
+.smps-standalone-page .smps-grid {
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  width: 100%;
+}
+
+.smps-standalone-page .smps-card {
+  min-width: 0;
+  padding: 10px !important;
+  gap: 7px !important;
+  border-radius: 10px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.smps-standalone-page .smps-card-header {
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 0;
+}
+
+.smps-standalone-page .smps-card-title {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.smps-standalone-page .smps-card-pills {
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.smps-standalone-page .smps-pill {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.smps-standalone-page .smps-mod-host,
+.smps-standalone-page .smps-netline,
+.smps-standalone-page .smps-offline-msg,
+.smps-standalone-page .smps-stat-sub,
+.smps-standalone-page .smps-ctrl-hint {
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.smps-standalone-page .smps-trip-banner {
+  font-size: 10px;
+  padding: 6px 8px;
+  margin: 0;
+}
+
+/* Stats */
+.smps-standalone-page .smps-stats-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.smps-standalone-page .smps-stat {
+  min-width: 0;
+  padding: 6px 6px;
+  border-radius: 7px;
+}
+
+.smps-standalone-page .smps-stat-label {
+  font-size: 8px;
+  line-height: 1.1;
+  margin-bottom: 2px;
+}
+
+.smps-standalone-page .smps-stat-val {
+  font-size: 15px;
+  line-height: 1.15;
+}
+
+.smps-standalone-page .smps-stat-unit {
+  font-size: 9px;
+}
+
+/* LED table */
+.smps-standalone-page .smps-led-total {
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.smps-standalone-page .smps-led-table {
+  gap: 3px;
+}
+
+.smps-standalone-page .smps-led-header,
+.smps-standalone-page .smps-led-row {
+  grid-template-columns: 36px 1fr 1fr 1fr;
+  gap: 5px;
+  font-size: 10px;
+  padding: 4px 6px;
+}
+
+.smps-standalone-page .smps-led-header {
+  font-size: 8px;
+}
+
+/* Mini charts */
+.smps-standalone-page .smps-mini-chart {
+  padding: 5px 3px 4px;
+}
+
+.smps-standalone-page .smps-mini-chart .recharts-responsive-container {
+  height: 72px !important;
+}
+
+.smps-standalone-page .smps-mini-legend {
+  font-size: 8px;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+.smps-standalone-page .smps-swatch {
+  width: 8px;
+  height: 2px;
+}
+
+/* Controls */
+.smps-standalone-page .smps-controls {
+  gap: 4px;
+  padding-top: 6px;
+}
+
+.smps-standalone-page .smps-ctrl-row {
+  gap: 4px;
+  font-size: 10px;
+}
+
+.smps-standalone-page .smps-ctrl-label {
+  flex: 0 0 68px;
+  font-size: 8px;
+}
+
+.smps-standalone-page .smps-ctrl-body {
+  gap: 4px;
+  min-width: 0;
+}
+
+.smps-standalone-page .smps-num-input {
+  width: 52px;
+  font-size: 10px;
+  padding: 3px 5px;
+}
+
+.smps-standalone-page .smps-unit-hint,
+.smps-standalone-page .smps-now {
+  font-size: 9px;
+}
+
+.smps-standalone-page .smps-now {
+  flex-basis: 56px;
+}
+
+.smps-standalone-page .smps-quickbar {
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.smps-standalone-page .smps-slider {
+  min-width: 0;
+}
+
+/* Cap cycle test */
+.smps-standalone-page .smps-cycle {
+  margin-top: 6px;
+  padding-top: 6px;
+  gap: 5px;
+}
+
+.smps-standalone-page .smps-cycle-title {
+  font-size: 10px;
+}
+
+.smps-standalone-page .smps-cycle-status {
+  font-size: 9px;
+  line-height: 1.25;
+  padding: 5px 6px;
+}
+
+/* Expanded panels still fit the viewport better */
+.smps-standalone-page .smps-algo-panel,
+.smps-standalone-page .smps-host-panel {
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.smps-standalone-page .smps-host-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.smps-standalone-page .smps-host-row label,
+.smps-standalone-page .smps-host-hint,
+.smps-standalone-page .smps-host-msg {
+  font-size: 10px;
+}
+
+.smps-standalone-page .smps-host-row input {
+  height: 26px;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+
+/* Browser height/width safety: slightly more compression on laptop screens. */
+@media (max-height: 850px), (max-width: 1500px) {
+  .smps-standalone-page .smps-root {
+    --smps-scale: 0.68;
+  }
+
+  .smps-standalone-page .smps-chart-box,
+  .smps-standalone-page .smps-chart-box .recharts-responsive-container {
+    height: 96px !important;
+  }
+
+  .smps-standalone-page .smps-mini-chart .recharts-responsive-container {
+    height: 56px !important;
+  }
+
+  .smps-standalone-page .smps-card {
+    padding: 8px !important;
+    gap: 5px !important;
+  }
+}
+
+/* Small screens cannot realistically show 5 complex cards without becoming unreadable. */
+@media (max-width: 1100px) {
+  .smps-standalone-page {
+    overflow: auto;
+  }
+
+  .smps-standalone-page .smps-root {
+    transform: none;
+    width: 100%;
+    height: auto;
+  }
+
+  .smps-standalone-page .smps-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .smps-standalone-page .smps-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
