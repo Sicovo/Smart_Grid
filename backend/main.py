@@ -758,26 +758,30 @@ def auto_naive_status():
 
 
 # ============================================================
-# Phase 4b: Live cost meter for the current run
+# Phase 4b: Per-Azure-day P&L meter for the current run
 # ============================================================
-# Integrates grid p_import × buy_price and export p_dissip × sell_price
-# over the time range since /algo/auto/start was last called.
+# Integrates grid p_import × sell_price and export p_dissip × buy_price
+# per Azure day, since /algo/auto/start was last called.
+#
+# UNITS (confirmed against Azure smart-grid simulation):
+#   - buy_price / sell_price are quoted in CURRENCY PER JOULE.
+#   - energy_J = p_W × dt_s is true joules.
+#   - cost = energy_J × price → currency directly. No per-kWh conversion
+#     needed.
+#
+# PRICE CONVENTION (names are GRID-perspective, not consumer):
+#   - sell_price = grid sells to us = WHAT WE PAY TO IMPORT (expensive)
+#   - buy_price  = grid buys from us = WHAT WE EARN FROM EXPORT (~0.5×)
 #
 # Method:
-#   - Grid snapshots carry the per-tick buy_price / sell_price.
+#   - Grid snapshots carry per-tick (day, tick, buy_price, sell_price).
 #   - Module snapshots (grid, export) carry p_import / p_dissip in watts.
-#   - For each pair of consecutive module snapshots, do trapezoidal
-#     integration: avg_power × dt = energy_J. Multiply by the price that
-#     was in effect at that timestamp (binary-search into grid snapshots).
-#   - Gaps > 30 s are treated as missing data and skipped (so a stopped
-#     run doesn't accumulate phantom cost during the gap).
-#
-# Units:
-#   - energy_J is true joules.
-#   - "cost" is the raw integral p_W · dt_s · price (currency units per W·s).
-#     For a price-per-kWh interpretation, divide by 3.6e6.
-#   - Both raw and per-kWh values are returned so the dashboard can show
-#     whichever makes sense once we know what Azure's price units are.
+#   - Group grid snapshots by Azure `day`; each group defines a [t_start,
+#     t_end] window for that day. Filter module snapshots by that window.
+#   - Trapezoidal integration over consecutive module snapshots:
+#     avg_power × dt = energy_J. Multiply by the price in effect at the
+#     earlier timestamp (binary-search into that day's grid snapshots).
+#   - Gaps > 30 s are treated as missing data and skipped.
 
 import bisect as _bisect
 
@@ -817,21 +821,79 @@ def _bus_cost_integrate(mod_rows, power_field, price_rows, price_field,
     return total_e, total_c, samples
 
 
+def _day_cost_block(day_prices, grid_mod_all, export_mod_all):
+    """Build the per-day cost summary dict for a single Azure day.
+
+    `day_prices` is the list of GridSnapshot rows for that day (sorted).
+    `grid_mod_all` / `export_mod_all` are the full module-snapshot lists
+    for the run; this function slices them by the day's time window.
+    """
+    if not day_prices:
+        return None
+    t_start = day_prices[0].timestamp
+    t_end   = day_prices[-1].timestamp
+
+    day_grid_mod = [r for r in grid_mod_all
+                    if t_start <= r.timestamp <= t_end]
+    day_export_mod = [r for r in export_mod_all
+                      if t_start <= r.timestamp <= t_end]
+
+    # GRID-perspective pairing: import × sell_price, export × buy_price.
+    imp_e, imp_c, imp_n = _bus_cost_integrate(
+        day_grid_mod,   "p_import", day_prices, "sell_price"
+    )
+    exp_e, exp_r, exp_n = _bus_cost_integrate(
+        day_export_mod, "p_dissip", day_prices, "buy_price"
+    )
+
+    # Time-weighted average prices over the day (for context).
+    avg_buy = avg_sell = None
+    if len(day_prices) >= 2:
+        bs = ss = tt = 0.0
+        for j in range(1, len(day_prices)):
+            dt = (day_prices[j].timestamp - day_prices[j-1].timestamp).total_seconds()
+            if dt <= 0 or dt > 60:
+                continue
+            bs += (_f(day_prices[j-1].buy_price)  or 0) * dt
+            ss += (_f(day_prices[j-1].sell_price) or 0) * dt
+            tt += dt
+        if tt > 0:
+            avg_buy  = bs / tt
+            avg_sell = ss / tt
+
+    ticks = [r.tick for r in day_prices if r.tick is not None]
+    return {
+        "day":             day_prices[0].day,
+        "tick_start":      min(ticks) if ticks else None,
+        "tick_end":        max(ticks) if ticks else None,
+        "ticks_observed":  len(set(ticks)),
+        "ticks_total":     60,
+        "import_energy_J": round(imp_e, 3),
+        "import_cost":     round(imp_c, 4),
+        "import_samples":  imp_n,
+        "export_energy_J": round(exp_e, 3),
+        "export_revenue":  round(exp_r, 4),
+        "export_samples":  exp_n,
+        "net_cost":        round(imp_c - exp_r, 4),
+        "avg_buy_price":   round(avg_buy,  4) if avg_buy  is not None else None,
+        "avg_sell_price": round(avg_sell, 4) if avg_sell is not None else None,
+    }
+
+
 @app.get("/algo/run/cost")
 def run_cost():
-    """Cumulative grid-trading cost since the auto-loop was last started.
+    """Per-Azure-day P&L since the auto-loop was last started.
 
     Returns 404 if no run has been started in this process. Otherwise:
         {
-          run_started_at, since,
-          import_energy_J, import_cost_raw, import_cost_per_kWh,
-          export_energy_J, export_revenue_raw, export_revenue_per_kWh,
-          net_cost_raw, net_cost_per_kWh,
-          avg_buy_price, avg_sell_price,
-          samples
+          run_started_at, run_stopped_at, run_running,
+          today:        {day, tick_start, tick_end, ticks_observed,
+                         import_cost, export_revenue, net_cost, ...},
+          previous_day: {... same shape, or null if not yet recorded},
+          price_units, price_ticks,
         }
-    "Net cost" follows the usual sign convention: positive means we paid
-    out, negative means the run net-earned via exports.
+
+    Net-cost sign: positive = we paid out, negative = we net-earned.
     """
     started_at = _get_run_started_at_dt()
     if started_at is None:
@@ -864,32 +926,28 @@ def run_cost():
             .all()
         )
 
-        imp_e, imp_c, imp_n = _bus_cost_integrate(
-            grid_mod,   "p_import",  price_rows, "buy_price"
-        )
-        exp_e, exp_r, exp_n = _bus_cost_integrate(
-            export_mod, "p_dissip",  price_rows, "sell_price"
-        )
+        # Group prices by Azure day, preserving first-seen order.
+        days_seen = []
+        day_to_prices = {}
+        for row in price_rows:
+            if row.day is None:
+                continue
+            if row.day not in day_to_prices:
+                day_to_prices[row.day] = []
+                days_seen.append(row.day)
+            day_to_prices[row.day].append(row)
 
-        # Time-weighted average prices over the run (for context).
-        if len(price_rows) >= 2:
-            buy_avg_sum = 0.0
-            sell_avg_sum = 0.0
-            t_total = 0.0
-            for j in range(1, len(price_rows)):
-                dt = (price_rows[j].timestamp - price_rows[j-1].timestamp).total_seconds()
-                if dt <= 0 or dt > 60: continue
-                buy_avg_sum  += (_f(price_rows[j-1].buy_price)  or 0) * dt
-                sell_avg_sum += (_f(price_rows[j-1].sell_price) or 0) * dt
-                t_total      += dt
-            avg_buy  = buy_avg_sum  / t_total if t_total > 0 else None
-            avg_sell = sell_avg_sum / t_total if t_total > 0 else None
-        else:
-            avg_buy = avg_sell = None
-
-        # Per-kWh conversion: energy_J / 3.6e6 = kWh.
-        # cost_raw = J × price_per_kWh; cost_per_kWh = cost_raw / 3.6e6.
-        kwh_factor = 1.0 / 3.6e6
+        today_block = previous_block = None
+        if days_seen:
+            today_day = days_seen[-1]
+            today_block = _day_cost_block(
+                day_to_prices[today_day], grid_mod, export_mod
+            )
+            if len(days_seen) >= 2:
+                prev_day = days_seen[-2]
+                previous_block = _day_cost_block(
+                    day_to_prices[prev_day], grid_mod, export_mod
+                )
 
         with _auto_lock:
             stopped_at = _auto_state.get("stopped_at")
@@ -899,23 +957,9 @@ def run_cost():
             "run_started_at": started_at.isoformat(),
             "run_stopped_at": stopped_at,
             "run_running":    running,
-            "since":          started_at.isoformat(),
-
-            "import_energy_J":        round(imp_e, 3),
-            "import_cost_raw":        round(imp_c, 6),
-            "import_cost_per_kWh":    round(imp_c * kwh_factor, 6),
-            "import_samples":         imp_n,
-
-            "export_energy_J":        round(exp_e, 3),
-            "export_revenue_raw":     round(exp_r, 6),
-            "export_revenue_per_kWh": round(exp_r * kwh_factor, 6),
-            "export_samples":         exp_n,
-
-            "net_cost_raw":           round(imp_c - exp_r, 6),
-            "net_cost_per_kWh":       round((imp_c - exp_r) * kwh_factor, 6),
-
-            "avg_buy_price":  round(avg_buy,  4) if avg_buy  is not None else None,
-            "avg_sell_price": round(avg_sell, 4) if avg_sell is not None else None,
+            "today":          today_block,
+            "previous_day":   previous_block,
+            "price_units":    "currency_per_joule",
             "price_ticks":    len(price_rows),
         }
     finally:

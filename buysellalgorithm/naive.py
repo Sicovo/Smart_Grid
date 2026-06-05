@@ -19,11 +19,14 @@ Mental model
    bus would sag, dragging grid in to make up the difference.
 
 2. **Deferrables are first-class load** as soon as their window opens.
-   Each active deferrable has a smooth required rate:
-       rate_W = remaining_energy / max(1, tick_end − tick + 1)
-   That spreads the energy linearly across the remaining ticks, ADAPTIVE
-   to any catch-up needed (if we under-served last tick, rate goes up).
-   At the deadline tick, rate equals remaining_energy — last-chance dump.
+   Azure's deferrable .energy is in JOULES. Each Azure tick is 5 real
+   seconds. So each active deferrable has a smooth required rate:
+       seconds_remaining = (tick_end − tick + 1) × 5 s
+       rate_W            = remaining_energy_J / seconds_remaining
+   That spreads the energy linearly across the remaining REAL TIME,
+   ADAPTIVE to any catch-up needed (if we under-served last tick, rate
+   goes up). At the deadline tick (1 tick = 5 s left), rate equals
+   remaining_energy / 5 W — last-chance dump.
 
 3. **Effective load = base demand + Σ deferrable rates**.
    This is what the LED is commanded to dissipate.
@@ -67,9 +70,22 @@ from typing import List, Dict, Optional
 
 # ---------------- Operating limits ----------------
 
-V_CAP_CHARGE_STOP    = 15.7   # match firmware V_CAP_CHARGE_CUTOFF
-V_CAP_DISCHARGE_STOP = 11.0   # match firmware V_CAP_TAPER_LO
-I_CAP_MAX            = 0.60   # match firmware I_CAP_MAX
+# Cap operating window — full firmware-supported range.
+#   V_CAP_CHARGE_STOP   = 15.7 V  (firmware V_CAP_CHARGE_CUTOFF — hard stop)
+#   V_CAP_DISCHARGE_STOP= 10.5 V  (firmware V_CAP_MIN — hardware floor;
+#                                  below this Va<Vb so the SMPS can't transfer)
+#   V_CAP_DISCHARGE_TAPER=11.0 V  (firmware V_CAP_TAPER_LO — start of the
+#                                  linear current-taper region; full discharge
+#                                  current above, scales to 0 at V_CAP_MIN)
+#   I_CAP_MAX           = 0.60 A  (firmware clamp on |i_cmd|)
+#
+# The algorithm now models the firmware taper internally (see
+# _discharge_i_max), so the entire 10.5 → 15.7 V band is usable. That
+# unlocks ~2.7 J of extra reserve in the 10.5–11.0 V taper region.
+V_CAP_CHARGE_STOP     = 15.7
+V_CAP_DISCHARGE_STOP  = 10.5
+V_CAP_DISCHARGE_TAPER = 11.0
+I_CAP_MAX             = 0.60
 
 VB_TARGET_GRID   = 9.9
 VB_TARGET_EXPORT = 10.1
@@ -81,12 +97,34 @@ VBUS_FALLBACK    = 9.9        # if telemetry missing / invalid
 POWER_DEADBAND_W = 1.0        # idle band on the net imbalance
 
 # Conservative PV boost-converter efficiency. Bus-side PV power = panel × this.
-# 0.80 is intentionally pessimistic — covers boost loss + cabling + cap-module
-# standby + LED converter loss. If we ever measure actual η > 0.85 we can bump.
-PV_EFFICIENCY = 0.80
+# Bench characterisation shows actual η > 95% across all four irradiances
+# (Section 3.3). 0.90 leaves ~5 pp of headroom so the algorithm never over-
+# models PV bus injection — keeps the bias toward bus surplus (export droop)
+# rather than bus deficit (grid import).
+PV_EFFICIENCY = 0.90
+
+# Cap-module SMPS one-way efficiency. Used to compensate i_cmd on DISCHARGE
+# only — when we want X W on the bus from a cap discharge, we have to ask
+# the firmware for X / η so that after the converter loss the bus actually
+# sees X. Charging side gets no compensation: whatever the bus gives up
+# physically reaches the cap minus η loss, and that's just life.
+# Measured round-trip is ~87 %; conservatively call one-way 0.90.
+ETA_CAP_SMPS = 0.90
 
 # LED firmware datasheet clamp — won't accept >3 W per channel.
 P_LED_MAX_PER_CH = 3.0
+
+# ---------------- Tick / time conventions ----------------
+# Azure smart-grid simulation:
+#   - one tick = 5 real seconds
+#   - /demand .demand_W is instantaneous power in WATTS
+#   - /deferables .energy is total energy in JOULES that must be delivered
+#     by the deadline tick
+#   - /price .buy_price / .sell_price are quoted in currency PER JOULE
+#
+# Implication: to spread a deferrable's joules linearly across its window,
+# divide by (ticks_remaining × SECONDS_PER_TICK) to get watts.
+SECONDS_PER_TICK = 5.0
 
 
 # ---------------- Types ----------------
@@ -185,23 +223,53 @@ def _safe_vbus(v):
     return float(v)
 
 
+def _discharge_i_max(v_cap):
+    """Effective max discharge current as a function of v_cap, matching
+    the cap firmware's linear taper:
+
+        v_cap ≥ 11.0 V          →  full I_CAP_MAX
+        10.5 V < v_cap < 11.0 V →  linear ramp from I_CAP_MAX to 0
+        v_cap ≤ 10.5 V          →  0  (SMPS can't transfer)
+
+    The algorithm respects this so its accounting matches reality — what
+    we command in this region IS what the firmware will deliver, and
+    `cap_p_W` doesn't over-promise."""
+    if v_cap >= V_CAP_DISCHARGE_TAPER:
+        return I_CAP_MAX
+    if v_cap <= V_CAP_DISCHARGE_STOP:
+        return 0.0
+    scale = (v_cap - V_CAP_DISCHARGE_STOP) / (V_CAP_DISCHARGE_TAPER - V_CAP_DISCHARGE_STOP)
+    return I_CAP_MAX * scale
+
+
 def _active_deferrable_rates(deferrables, tick):
     """Return (total_rate_W, [per-deferrable diagnostic dicts]) for the
-    deferrables whose window covers ``tick``. Each rate is
-    remaining_energy / ticks_remaining, so the bucket completes by its
-    deadline even if we under-served earlier ticks."""
+    deferrables whose window covers ``tick``.
+
+    Units (per Azure convention — see SECONDS_PER_TICK):
+        d.energy            joules (J)
+        ticks_remaining     Azure ticks
+        seconds_remaining   real seconds (ticks × 5)
+        rate_W              = energy_J / seconds_remaining  →  watts
+
+    Spreading energy linearly across the remaining real-time guarantees
+    the deferrable completes on the deadline tick, with adaptive catch-up
+    if previous ticks under-served (because the live d.energy from Azure
+    already reflects what's still owed)."""
     total = 0.0
     detail = []
     for d in deferrables:
         if d.tick_start <= tick <= d.tick_end and d.energy > 0:
-            ticks_remaining = max(1, d.tick_end - tick + 1)
-            rate = d.energy / ticks_remaining
+            ticks_remaining   = max(1, d.tick_end - tick + 1)
+            seconds_remaining = ticks_remaining * SECONDS_PER_TICK
+            rate = d.energy / seconds_remaining
             total += rate
             detail.append({
                 "index":              d.index,
                 "tick_start":         d.tick_start,
                 "tick_end":           d.tick_end,
                 "ticks_remaining":    ticks_remaining,
+                "seconds_remaining":  seconds_remaining,
                 "remaining_energy":   d.energy,
                 "rate_W":             rate,
             })
@@ -269,18 +337,29 @@ def decide(state: GridState) -> Commands:
         cmd.regime = "deficit"
         deficit = -net
 
-        if state.v_cap <= V_CAP_DISCHARGE_STOP or state.energy_cap <= 0:
+        # Effective max discharge current at the current v_cap, accounting
+        # for the firmware's 10.5–11.0 V taper. At v_cap=10.5 V this is 0.
+        i_max_now = _discharge_i_max(state.v_cap)
+
+        if i_max_now <= 0:
             cap_clamped = "floor"
             cap_p = 0.0
             cap_headroom = 0.0
         else:
-            i_request   = deficit / vbus
-            i_discharge = min(I_CAP_MAX, i_request)
-            if i_request > I_CAP_MAX:
-                cap_clamped = "i_max"
+            # Compensate for cap-side SMPS loss on discharge: ask the firmware
+            # for deficit / η so the bus actually sees ``deficit`` watts after
+            # the converter loss.  i_cmd is BUS-SIDE current (firmware spec).
+            i_request   = deficit / (vbus * ETA_CAP_SMPS)
+            i_discharge = min(i_max_now, i_request)
+            # Diagnose which clamp (if any) bit:
+            if state.v_cap < V_CAP_DISCHARGE_TAPER:
+                cap_clamped = "taper"          # in the 10.5–11.0 V soft region
+            elif i_request > i_max_now:
+                cap_clamped = "i_max"          # hit the 0.6 A hardware limit
             cmd.cap.i_cmd = -i_discharge
-            cap_p         = -i_discharge * vbus
-            cap_headroom  = I_CAP_MAX * vbus - i_discharge * vbus
+            # cap_p is signed bus-side power AFTER the firmware delivers it.
+            cap_p         = -i_discharge * vbus * ETA_CAP_SMPS
+            cap_headroom  = (i_max_now - i_discharge) * vbus * ETA_CAP_SMPS
 
         residual = max(0.0, deficit - (-cap_p))
         cmd.deficit_W = residual    # droop imports this
@@ -342,6 +421,10 @@ def state_from_db_rows(grid_row, pv_row, cap_row) -> Optional[GridState]:
             energy     = max(0.0, _f(item.get('energy'))),
         ))
 
+    # Prefer the cap module's bus reading. It's electrically closest to the
+    # actuator we're commanding (cap.i_cmd), so its sense of vbus is what
+    # determines the actual bus power delivered. Fall back to PV only if
+    # the cap module is missing telemetry entirely.
     vbus = _f(getattr(cap_row, 'vb_bus', None))
     if vbus <= 0:
         vbus = _f(getattr(pv_row, 'vb_bus', None))
@@ -410,6 +493,7 @@ def commands_to_diagnostics(cmd: Commands) -> Dict:
             }
             for d in cmd.active_deferrables
         ],
+        "seconds_per_tick": SECONDS_PER_TICK,
     }
 
 

@@ -7,7 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 AZURE_BASE_URL = "https://icelec50015.azurewebsites.net"
 AZURE_REQUEST_TIMEOUT = float(os.getenv("AZURE_REQUEST_TIMEOUT", "5"))
-MODULE_POLL_INTERVAL = float(os.getenv("MODULE_POLL_INTERVAL", "2"))
+# Poll interval: 1 s so tick detection latency is bounded by 1 s instead of
+# aliasing against the 5 s Azure tick. At 2 s, decisions arrive at irregular
+# 4 s / 6 s spacing depending on phase. At 1 s, they land at consistent ~5 s.
+MODULE_POLL_INTERVAL = float(os.getenv("MODULE_POLL_INTERVAL", "1"))
 
 # All module telemetry is now push-based. No polling of /tlm endpoints.
 

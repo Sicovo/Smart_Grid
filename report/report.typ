@@ -270,11 +270,13 @@ $ I_("module") = (V_("set") - V_("bus")) / R_("droop") $
 
 with sign and saturation chosen by the module's role. The droop resistance $R_("droop")$ is sized so that the module current saturates at its rated maximum exactly at the edge of the ±0.1V band. This bounds the steady-state bus error to ±0.1V at full load, which is ±1% of nominal and tight enough to be a stiff bus for all downstream loads.
 
-An important consequence of taking demo-day measurements on the bus itself is that conversion losses on different paths are calculated differently. For the LED Load SMPS and the Export SMPS, the losses lie between the bus and the destination, so the bus delivers $P_("destination") + P_("losses")$ and the metric counts the sum as either load or export. SMPS efficiency on those two paths therefore does not affect the score, and the modules can be sized for cost or simplicity rather than peak efficiency. For the Import SMPS the losses lie between the 12V supply and the bus measurement point, so the bus receives only $P_("grid") - P_("losses")$. Every watt lost in the import path is grid energy that does not appear at the bus, directly degrading the economic score. 
+An important consequence of taking demo-day measurements on the bus itself is that conversion losses on different paths affect the score differently depending on which side of the bus meter they sit. For the Import SMPS the losses lie between the 12V PSU and the bus measurement point. The bus meter directly registers $P_("import") = P_("PSU,drawn") - P_("losses")$, and the economic score is computed from this bus-side reading. The PSU absorbs the conversion loss; we are billed only for what arrives at the bus. Import efficiency is therefore not a direct score driver under the bus-side metric — it remains relevant as a hardware-capacity constraint (current limits, dropout headroom) but does not enter the cost formula. For the Export SMPS and the LED Load SMPS the losses lie between the bus measurement point and the destination, so the bus expends $P_("destination") + P_("losses")$ and the meter registers that bus-side sum. Firmware telemetry on these two paths, however, reports only the post-loss values ($P_("dissipated")$ at the export resistor, channel-side $P_("LED")$ at the LED string) because the shunt sits on the destination side. The dashboard therefore cannot independently observe the bus-side contribution that the metric credits, and any conversion loss on those two paths reduces the visible reportable revenue or load below what the lecturer's bus meter actually records. Export and LED efficiency are correspondingly hardware-capture concerns: the higher the conversion efficiency, the closer the post-loss reading sits to the bus-side reality, and the smaller the gap between our dashboard and the score.
 
 == PSU Voltage Rationale: 12 V
 
-The choice of 12V for the primary supply is driven by efficiency. For a synchronous buck converter, the steady-state conduction loss summed across both switches is @erickson_fundamentals_2020
+The choice of 12V for the primary supply is driven by dropout margin, not efficiency. A buck produces $V_("bus")$ at a duty $D = V_("bus") / V_("in")$, which tends to unity as $V_("in")$ approaches $V_("bus")$, yet a real converter cannot reach $D = 1$: a minimum switch off-time, gate-driver refresh requirements, and the controller's maximum-duty clamp all hold the duty below unity. With a maximum duty of roughly 0.9, regulation is lost once $V_("in")$ falls below about $V_("bus") / 0.9 approx 11$V, where the output begins to sag below target. Fixing $V_("in") = 12$V leaves comfortable margin above this floor while remaining the standard bench-supply value available in the lab.
+
+Efficiency is a secondary consideration on this axis, and only weakly so. For a synchronous buck the steady-state conduction loss summed across both switches is @erickson_fundamentals_2020
 
 $ P_("cond") = D dot I_("rms")^2 dot R_("ds,on,HS") + (1 - D) dot I_("rms")^2 dot R_("ds,on,LS") $
 
@@ -290,9 +292,7 @@ Every term scales with $V_("in")$ or $V_("in")^2$. Inductor ripple also shrinks 
 
 $ Delta I_L = (V_("in") - V_("bus")) dot D dot T / L $
 
-which reduces inductor RMS current and copper loss as a second-order benefit. The net result is that import SMPS efficiency rises as $V_("in")$ is reduced toward $V_("bus")$, but only weakly: with matched synchronous FETs the dominant conduction term is independent of $V_("in")$, leaving switching term as the only input-voltage-dependent loss.
-
-However the limiting constraint is not efficiency but dropout. A buck produces $V_("bus")$ at a duty $D = V_("bus") / V_("in")$, which tends to unity as $V_("in")$ approaches $V_("bus")$, yet a real converter cannot reach $D = 1$: a minimum switch off-time, gate-driver refresh requirements, and the controller's maximum-duty clamp all hold the duty below unity. With a maximum duty of roughly 0.9, regulation is lost once $V_("in")$ falls below about $V_("bus") / 0.9 approx 11$V, where the output begins to sag below target. Fixing $V_("in") = 12$V leaves comfortable margin above this floor and any marginal efficiency gain from lowering $V_("in")$ further does not justify reducing the risk of tripping. 
+which reduces inductor RMS current and copper loss as a second-order benefit. The net result is that import SMPS efficiency rises as $V_("in")$ is reduced toward $V_("bus")$, but only weakly: with matched synchronous FETs the dominant conduction term is independent of $V_("in")$, leaving the switching term as the only input-voltage-dependent loss. Crucially, under the bus-side metric established in Section 2.3, even this shallow efficiency variation does not enter the economic score: import conversion loss is absorbed by the PSU, upstream of the bus meter. The efficiency lens on this decision is therefore doubly weak — small in magnitude and invisible to the cost formula — which leaves dropout as the binding criterion.
 
 @fig:buck-vin-eff plots this loss model at a fixed 10V bus and 1.5A load. Across the usable 11V to 15V range the modelled efficiency is nearly flat: total loss shifts by only a few tens of milliwatts, around 0.2% of the delivered power, because conduction loss is constant and only the small switching term tracks $V_("in")$. The sharp collapse at the left of the plot is not a loss effect but the dropout region described above, where the converter can no longer regulate, so it marks the unusable input range rather than an inefficient one. The chosen 12V point sits on the flat plateau with comfortable margin above that floor.
 
@@ -300,8 +300,6 @@ However the limiting constraint is not efficiency but dropout. A buck produces $
   image("images/buck_vin_efficiency.png", width: 100%),
   caption: [Modelled buck efficiency and loss split versus input voltage.],
 ) <fig:buck-vin-eff>
-
-A confirmation experiment is flagged in Section 12 (Future Work): sweep $V_("in")$ from 11V to 14V at fixed $V_("bus") = 10$V and measure import SMPS efficiency. The expectation, given the analysis above, is a shallow monotonic rise as $V_("in")$ falls toward 11V, ending in a steep efficiency cliff once dropout kicks in.
 
 == Coordination Scheme: Symmetric Droop vs Mutex Arbitration
 
@@ -448,7 +446,7 @@ Second, the per-irradiance means rise monotonically with irradiance: 96.5% at 25
   caption: [Boost efficiency versus duty cycle in DCM and CCM, from Fig. 5 of @navamani_iccpct2015.],
 ) <fig:pv-eta-ref>
 
-The combined finding is that PV conversion efficiency sits in a narrow 96 to 98% band across all four irradiance levels, with a clean 1.4 percentage-point rise from 25% to 100% irradiance and no meaningful dependence on bus voltage. PV's contribution to the system optimum is therefore largely insensitive to bus-voltage choice, so the system-level optimal $V_("bus")$ for maximum overall efficiency is driven by the more bus-voltage-sensitive Import SMPS characterised in Section 5.3.
+The combined finding is that PV conversion efficiency sits in a narrow 96 to 98% band across all four irradiance levels, with a clean 1.4 percentage-point rise from 25% to 100% irradiance and no meaningful dependence on bus voltage. PV's contribution to the system optimum is therefore largely insensitive to bus-voltage choice. Combined with the Section 2.3 finding that import losses do not enter the economic score, PV efficiency is the only on-bus conversion path whose variation could in principle bias $V_("bus")$ selection, and it does not. The $V_("bus") = 10$V choice rests on hardware constraints (supercapacitor lower bound, PV panel open-circuit voltage, buck dropout) rather than on a steady-state efficiency optimum.
 
 #pagebreak()
 
@@ -624,13 +622,43 @@ A soft-start grace window guards the undervolt trip. When the grid module is the
 
 == Evaluation & Optimisation
 
-The import SMPS efficiency is defined as $eta_("import") = P_("bus,delivered") / P_("PSU,drawn")$. The numerator $P_("bus,delivered")$ is the firmware's $P_("import")$ field. The denominator $P_("PSU,drawn") = V_("PSU") dot I_("PSU")$ requires $I_("PSU")$, which is not measured on the import module because the shunt sits on the Port B (bus) side. Unlike the PV case in Section 3.3, however, $I_("PSU")$ is available with no extra instrumentation and no calibration step: the bench PSU's built-in current readout exposes it directly with manufacturer-stated accuracy. The test procedure reduces to "read the three-second-averaged $P_("import")$ off the dashboard, multiply $V_("PSU")$ by the PSU's current reading, take the ratio".
+The Export and Import SMPS share a buck topology and a bench characterisation methodology but play opposite roles in the bus-side scoring framework established in Section 2.3. Export efficiency determines how much of the bus-expended power lands on the post-loss telemetry that the dashboard reports, making it the more score-relevant of the two; Import efficiency is absorbed by the upstream PSU and is presented here for completeness rather than as a score lever. The two sweeps are presented in that order.
 
-Section 2.3 established that any watt lost in the import path is a watt of grid energy that does not appear on the bus, directly degrading the economic score. Import efficiency therefore deserves disproportionate evaluation attention, and the sweep is correspondingly fine-grained. The bus-voltage axis is swept across nine points from 7 V to 11 V in roughly 0.5 V steps, deliberately wider than the 9.9 V to 10.1 V dead-band so the duty-cycle dependency is captured across the full operating range rather than just the cluster around 10 V. The current axis covers 0.1, 0.2 and 0.3 A, set by the outer voltage PI. At each of the 27 grid points the three-second-averaged $P_("import")$ is recorded against the steady-state PSU current reading.
+=== Measured Export Efficiency
+
+The export SMPS efficiency is defined as $eta_("export") = P_("dissipated") / P_("bus,drawn")$. The numerator $P_("dissipated")$ is the firmware's post-loss field, measured at the dummy resistor by the Port B INA219 on the export module. The denominator $P_("bus,drawn")$ is the bus-side power delivered into the converter and is not natively instrumented on the module, so a bench DMM is placed in series with the bus-to-export wire and $V_("bus")$ is read off the dashboard. The procedure mirrors the PV methodology of Section 3.3: at each operating point the three-second-averaged $P_("dissipated")$ is recorded against $V_("bus") dot I_("DMM")$ and the ratio taken.
+
+// TODO(export-sweep): fill in once measurements complete.
+// Suggested grid: V_bus at 9.0, 9.5, 10.0, 10.5, 11.0 V; I_L at 0.1, 0.2, 0.3 A.
+// Mirror the import table format below.
+
+#protable(
+  caption: [Measured Export SMPS efficiency by bus voltage and load current.],
+  columns: (1fr, 1fr, 1.2fr, 1.2fr, 1.2fr),
+  align: center + horizon,
+  [*$V_("bus")$ (V)*], [*Duty $D$*], [*$eta$ at 0.1 A*], [*$eta$ at 0.2 A*], [*$eta$ at 0.3 A*],
+  [9.0],  [ ], [ ], [ ], [ ],
+  [9.5],  [ ], [ ], [ ], [ ],
+  [10.0], [ ], [ ], [ ], [ ],
+  [10.5], [ ], [ ], [ ], [ ],
+  [11.0], [ ], [ ], [ ], [ ],
+)
+
+// TODO(export-sweep): replace placeholder image once images/export_efficiency.png exists.
+// #figure(
+//   image("images/export_efficiency.png", width: 100%),
+//   caption: [Measured Export SMPS efficiency versus bus voltage at three load currents.],
+// ) <fig:export-eta>
+
+// TODO(export-sweep): one short paragraph summarising the result.
+// Expected shape: nominal-bus efficiency at 10 V around [TBD]%; trend with V_bus
+// and I_L follows the same buck loss model as the import sweep below. Headline
+// number to extract is η at the bus dead-band and at the expected operating
+// current, since that determines the dashboard-vs-bus-meter gap during demo.
 
 === Measured Import Efficiency
 
-@fig:import-eta and the table below present the 27-point sweep at $V_("PSU") = 12$ V. Efficiency rises monotonically with both bus voltage and load current. At the nominal $V_("bus") = 10$ V the converter delivers 83.8%, 89.9% and 92.5% at 0.1, 0.2 and 0.3 A respectively; at the high end of the sweep ($V_("bus") approx 11$ V) the same three numbers rise to 84.7%, 91.3% and 93.6%.
+Although import losses do not enter the economic score under the bus-side metric (Section 2.3), the import buck was characterised across a 27-point $V_("bus") times I_L$ grid to validate the 12 V PSU choice (no dropout artefacts above $V_("bus") approx 7$ V) and to confirm the operating-point efficiency sits comfortably above the design budget. The methodology mirrors the export sweep above except that $I_("PSU")$ is read from the bench PSU's built-in current display rather than via an external DMM, since the PSU exposes it directly with manufacturer-stated accuracy.
 
 #protable(
   caption: [Measured Import SMPS efficiency by bus voltage and load current.],
@@ -653,15 +681,7 @@ Section 2.3 established that any watt lost in the import path is a watt of grid 
   caption: [Measured Import SMPS efficiency versus bus voltage at three load currents.],
 ) <fig:import-eta>
 
-Both trends are expected from the buck loss model. The bus-voltage dependence reflects the duty cycle: as $V_("bus")$ rises toward $V_("PSU") = 12$ V the duty $D = V_("bus") / V_("PSU")$ approaches unity, inductor ripple shrinks, and the high-side switch spends more of each cycle conducting against a less-than-quadratic increase in $I^2 R$ loss. The current dependence reflects fixed-overhead amortisation: gate-drive consumption and switching loss are largely independent of load, so they consume a larger fraction of throughput at low current. At 0.1 A the converter delivers only about 1 W to the bus and the fixed overheads dominate; at 0.3 A the delivered power is roughly three times larger and the efficiency rises by 6 to 10 percentage points.
-
-For the system-level optimum this is the strongest argument for a bus voltage above 10 V if other constraints allow. Pushing $V_("bus")$ from 10 V to 11 V at $I_("L") = 0.3$ A buys roughly 1.1 percentage points of import efficiency; combined with the Section 3.3.3 result that PV efficiency is approximately flat with bus voltage, the system efficiency is dominated by import behaviour and tilts toward a higher bus voltage. The decision is left to the dispatch algorithm of Section 9, which weighs this against the supercapacitor's reduced energy-storage headroom at a higher bus (the cap window must stay above the bus).
-
-The current axis here is a preliminary low-current characterisation; the originally planned 0.5 to 2.0 A range, covering the operational current band that the import module will see when serving combined LED demand and cap charging, is scheduled as a follow-up to extend the surface upward.
-
-The Export module is excluded from the efficiency sweep. Per the architectural rationale in Section 2.3, the project supervisor confirmed that demo-day power measurements are taken at the DC bus bar itself, so all losses on the export path between the bus and the dummy resistor are counted as if they were part of the dissipated load; export's role is to remove excess bus energy when bus voltage exceeds the export droop setpoint, and the module is sized for cost and simplicity, not for peak conversion efficiency. The dummy-resistor dissipation $P_("dissipated")$ is still reported in the telemetry for the system-level energy balance check in Section 11, but the conversion loss between bus and dummy is not separately characterised.
-
-The exclusion of both Export and LED Load efficiency from the demo-day score is an experimental simplification specific to the assessed metric and is acknowledged as a divergence from real-world deployment economics. In a domestic smart-grid context both paths matter: Export carries electricity sold back to the utility (conversion losses reduce revenue per surplus watt), and the LED Load sits between the bus and the end-use load (conversion losses force a larger bus draw to deliver the same demand, increasing import cost or decreasing export revenue).
+At the nominal $V_("bus") = 10$ V the converter delivers 83.8%, 89.9% and 92.5% at 0.1, 0.2 and 0.3 A respectively. Both trends — monotonic rise with $V_("bus")$ as duty approaches unity, and monotonic rise with $I_L$ as fixed switching overheads amortise over more delivered power — are consistent with the buck loss model of Section 2.4 and confirm the converter is operating in its intended region, away from dropout. The 0.5 to 2.0 A extension noted in Section 11.3 remains scheduled to characterise the upper operating current band.
 
 #pagebreak()
 
@@ -705,11 +725,9 @@ A 60-second scripted tracking test exercises each channel individually and then 
 
 Each channel tracks its command within approximately ±3% across all operating points, with the residual driven by per-string forward-voltage variation that the $i_("ref") = P_("demand") / v_("LED")$ division (Section 6.1.2) leaves uncompensated when $v_("LED")$ is itself estimated through the SPI ADC chain. Step settling on each on or off transition resolves inside a single 50 ms dashboard sample. The all-on and ramp phases confirm that channels do not interact through the shared bus or shared SPI ADC, so a multi-colour LED demand is served additively without cross-channel disturbance.
 
-=== Efficiency Exclusion
+=== Efficiency Characterisation Gap
 
-The LED Load SMPS conversion efficiency is not separately characterised. Per the architectural rationale in Section 2.3 and confirmed directly by the project supervisor, the demo-day power measurements occur at the DC bus bar itself, so any loss occurring between the bus and the LED string is counted on the bus side as load consumption rather than as a deduction from the score. The metric therefore treats LED Load SMPS losses as if they were additional LED dissipation, and there is no scoring benefit to driving LED Load SMPS efficiency above whatever the simplest competent design delivers. The module is sized for cost, current capability and PI robustness rather than peak efficiency, on the same logic that excludes the Export SMPS in Section 5.3.
-
-The real-world deployment implications of leaving the LED Load (and Export) path uncharacterised, and the corresponding future-work efficiency sweep, are discussed alongside the Export equivalent in Section 5.3.
+The LED Load SMPS conversion efficiency is not characterised in this submission. The path sits between the bus meter and the LED string, in the same topological position as the Export SMPS, so the bus-side reasoning of Section 2.3 applies symmetrically: the lecturer's bus meter registers $P_("LED,bus") = P_("LED,channel") + P_("losses")$ as load, while the firmware reports only the per-channel post-loss values $p_("red")$, $p_("yel")$, $p_("grn")$ measured at the LED string. The dashboard therefore treats the channel-side sum as if it were the bus-side load, which is acknowledged as a conservative under-report of the actual bus draw — by exactly the conversion loss in the LED Load buck. Hardware efficiency on this path matters in the same sense as it does for Export: the higher $eta_("LED")$, the smaller the gap between dashboard-reported LED load and bus-meter LED load. A characterisation sweep mirroring the Section 5.3.1 export methodology would close this gap and is flagged as future work; in the interim the module is sized for cost, current capability and PI robustness, and the energy-balance residual in Section 11.2 provides a coarse upper bound on the unmodelled loss.
 
 #pagebreak()
 
@@ -816,9 +834,9 @@ The coordinator runs as a 1 Hz outer loop on the host, two orders of magnitude s
 
 The objective is set directly by the brief: minimise the net cost of grid energy over a daily cycle while always meeting demand. With import and export power metered at the bus, the cost accumulated over the cycle is
 
-$ C = sum_t (P_("import")(t) dot p_("buy")(t) - P_("export")(t) dot p_("sell")(t)) dot Delta t $
+$ C = sum_t (P_("import")(t) dot p_("sell")(t) - P_("export")(t) dot p_("buy")(t)) dot Delta t $
 
-where $p_("buy")$ and $p_("sell")$ are the per-tick prices read from the web service. The coordinator minimises $C$ subject to a power balance at the bus on every tick,
+where $p_("buy")$ and $p_("sell")$ are the per-tick prices read from the web service. The naming convention follows the grid's perspective: $p_("sell")$ is the price at which the utility sells energy to us, charged on imports, and $p_("buy")$ is the price at which the utility buys energy back, credited on exports. Empirically $p_("buy") approx 0.5 dot p_("sell")$ at every tick, which is the standard prosumer-tariff spread and the headline driver of the arbitrage opportunity. The coordinator minimises $C$ subject to a power balance at the bus on every tick,
 
 $ P_("PV") + P_("import") + P_("cap,dis") = P_("demand") + P_("export") + P_("cap,chg") + P_("loss") $
 
@@ -878,9 +896,9 @@ PV SMPS (Section 3.3): manual measurement using a DMM placed in series with the 
 
 Supercap SMPS (Section 4.3): fully automated cycle test triggered from the host dashboard. The test integrates bus-side $E_("in")$ and $E_("out")$ at the 1 kHz tick and reports the round-trip efficiency $eta_("RT") = E_("out") / E_("in")$ from a single charge and discharge cycle. The sweep covers charge and discharge current at six levels (0.1 to 0.6 A in 0.1 A steps) at a 10V bus, bus voltage at five levels (8.0 to 10.0 V) at 0.2 A, and hold duration at six levels (0 to 300 s) at 0.2 A. The measured round-trip efficiency is approximately 88% with no hold, falling to 64% after a 300 s hold at peak charge.
 
-Import SMPS (Section 5.3): manual measurement using the bench PSU's built-in current readout for the pre-loss $P_("PSU,drawn")$ side; the post-loss $P_("bus,delivered")$ is available from the firmware. Bus voltage is swept across nine points from 7 V to 11 V in 0.5 V steps; current is set at 0.1, 0.2 and 0.3 A by the outer voltage PI. The 27-point grid is complete and gives $eta_("import")$ rising monotonically from 77.8% (low current, low bus) to 93.6% (high current, high bus), with 83.8%, 89.9% and 92.5% at the nominal $V_("bus") = 10$ V at 0.1, 0.2 and 0.3 A respectively. A 0.5 to 2.0 A current extension is scheduled to characterise the operational current band.
+Import SMPS (Section 5.3.2): manual measurement using the bench PSU's built-in current readout for the pre-loss $P_("PSU,drawn")$ side; the post-loss $P_("bus,delivered")$ is available from the firmware. Bus voltage is swept across nine points from 7 V to 11 V in 0.5 V steps; current is set at 0.1, 0.2 and 0.3 A by the outer voltage PI. The 27-point grid is complete and gives $eta_("import")$ rising monotonically from 77.8% (low current, low bus) to 93.6% (high current, high bus), with 83.8%, 89.9% and 92.5% at the nominal $V_("bus") = 10$ V at 0.1, 0.2 and 0.3 A respectively. A 0.5 to 2.0 A current extension is scheduled to characterise the operational current band.
 
-Export SMPS is not characterised for efficiency because its losses occur between the bus and the dummy resistor and are not counted by the demo-day metric (Section 2.3).
+Export SMPS (Section 5.3.1): manual measurement mirroring the import procedure but with the DMM in series on the bus-to-export wire (since the firmware shunt sits on the resistor side), so $P_("dissipated")$ is read from firmware and $P_("bus,drawn")$ from $V_("bus") dot I_("DMM")$. The sweep grid and headline numbers are reported in Section 5.3.1. Unlike Import, this efficiency is directly score-relevant under the bus-side metric (Section 2.3) because the loss sits between the bus meter and the destination and reduces the dashboard-reportable revenue relative to the lecturer's bus reading.
 
 == Performance Metrics
 
@@ -904,7 +922,7 @@ Each of the brief's six requirements is mapped below to the subsystem that reali
   [1], [Supply domestic LEDs per web demand], [LED Load SMPS (Section 6)], [Power-tracking test (Section 6.3)], [Implemented; tracking within ±3% across channels],
   [2], [Extract PV energy with MPPT], [PV SMPS (Section 3)], [MPPT mode comparison; efficiency sweep], [Efficiency sweep complete; MPPT comparison scheduled],
   [3], [Store excess in supercap, no batteries], [Supercap SMPS (Section 4)], [Cycle test; round-trip efficiency], [Implemented],
-  [4], [Import and export to grid, metered], [Import/Export SMPS (Section 5)], [Import efficiency sweep; bus dead-band], [Implemented; 0.5 to 2.0A current extension scheduled],
+  [4], [Import and export to grid, metered], [Import/Export SMPS (Section 5)], [Import efficiency sweep; export efficiency sweep; bus dead-band], [Implemented; 0.5 to 2.0A current extension and export sweep scheduled],
   [5], [Minimise cost; schedule storage and deferrables; beat naive], [Algorithm (Section 9)], [Dry run versus naive baseline], [In progress],
   [6], [UI for current and historic energy data], [User Interface (Section 8)], [Live dashboard; telemetry plots], [Implemented],
 )
