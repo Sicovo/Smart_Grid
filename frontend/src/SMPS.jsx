@@ -252,6 +252,128 @@ function OverviewGraphCard({ data }) {
   );
 }
 
+// ---- Algorithm tab strip ----
+// Reads /algo/list, renders one tab per registered algorithm, POSTs
+// /algo/active on click. Algorithms are added/removed by editing
+// buysellalgorithm/registry.py — the frontend is data-driven.
+function AlgorithmTabs({ apiBase, activeId, onSwitch, switching, switchMsg }) {
+  const [algos, setAlgos] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch(`${apiBase}/algo/list`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setAlgos(Array.isArray(data?.algorithms) ? data.algorithms : []);
+      } catch (err) {
+        console.error("Failed to load algorithm list", err);
+      }
+    }
+    load();
+    const id = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [apiBase]);
+
+  if (algos.length === 0) {
+    return <div className="algo-tabs-empty">loading algorithms…</div>;
+  }
+
+  return (
+    <div className="algo-tabs-wrap">
+      <div className="algo-tabs">
+        {algos.map((a) => {
+          const isActive = a.id === activeId;
+          return (
+            <button
+              key={a.id}
+              className={`algo-tab ${isActive ? "active" : ""}`}
+              onClick={() => !isActive && !switching && onSwitch(a.id)}
+              disabled={switching}
+              title={a.description}
+            >
+              <span className="algo-tab-dot">{isActive ? "●" : "○"}</span>
+              <span className="algo-tab-label">{a.name}</span>
+            </button>
+          );
+        })}
+      </div>
+      {switchMsg && <div className="algo-tabs-msg">{switchMsg}</div>}
+    </div>
+  );
+}
+
+
+// ---- Smart V1 (and future algos) extras panel ----
+// Renders the algorithm-specific diagnostics dict (cmd.algo_extras) as a
+// glanceable grid. Hidden when the active algorithm provides no extras.
+function AlgoExtrasPanel({ naive }) {
+  const extras = naive?.diagnostics?.algo_extras;
+  if (!extras || Object.keys(extras).length === 0) return null;
+
+  const panelStyle = {
+    border: "1px solid rgba(128,128,128,0.25)",
+    background: "rgba(127,127,127,0.08)",
+    borderRadius: 6,
+    padding: "8px 10px",
+    fontSize: 13,
+    color: "inherit",
+    marginTop: 10,
+  };
+  const mutedStyle = { color: "rgba(127,127,127,0.85)" };
+
+  // Pretty-print the Smart V1 shape if recognised, otherwise dump generically.
+  const isSmartV1 =
+    "cap_action_reason" in extras || "forecast_now" in extras;
+
+  if (isSmartV1) {
+    const fn = extras.forecast_now || {};
+    return (
+      <div style={panelStyle}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>
+          Smart V1 forecast & decision
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+          <div>
+            <div style={mutedStyle}>cap action</div>
+            <strong>{extras.cap_action_reason || "—"}</strong>
+          </div>
+          <div>
+            <div style={mutedStyle}>target W (bus)</div>
+            <strong>{extras.cap_action_target_W?.toFixed?.(2) ?? "—"}</strong>
+          </div>
+          <div>
+            <div style={mutedStyle}>arb gain (¢/J)</div>
+            <strong>{extras.cap_arb_gain?.toFixed?.(1) ?? "—"}</strong>
+          </div>
+          <div>
+            <div style={mutedStyle}>horizon (ticks)</div>
+            <strong>{extras.cap_arb_horizon_t ?? "—"}</strong>
+          </div>
+        </div>
+        <div style={{ marginTop: 8, ...mutedStyle, fontSize: 12 }}>
+          forecast at this tick — sell <strong>{fn.sell_price ?? "—"}</strong>  ·
+          buy <strong>{fn.buy_price ?? "—"}</strong> ·
+          PV <strong>{fn.pv_bus_W ?? "—"} W</strong> ·
+          demand <strong>{fn.demand_W ?? "—"} W</strong>
+        </div>
+      </div>
+    );
+  }
+
+  // Generic fallback — list keys/values.
+  return (
+    <div style={panelStyle}>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>Algorithm extras</div>
+      <pre style={{ margin: 0, fontSize: 11, overflowX: "auto" }}>
+        {JSON.stringify(extras, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+
 function NaiveDispatchCard({
   apiBase,
   naive,
@@ -268,14 +390,32 @@ function NaiveDispatchCard({
   onAutoApplyChange,
   cooldownSec,
   onCooldownChange,
+  activeAlgoId,
+  onSwitchAlgo,
+  switchingAlgo,
+  switchAlgoMsg,
 }) {
+  const algoLabel = naive?.algo_name || naive?.diagnostics?.algo_id || activeAlgoId || "—";
   return (
     <section className="card smps-plot-card smps-overview-card">
       <div className="card-header">
-        <span className="icon-green">●</span> Naive Dispatch
+        <span className="icon-green">●</span> Algorithm Dispatch
+        <span style={{ marginLeft: 8, fontSize: 12, color: "rgba(127,127,127,0.85)", fontWeight: 400 }}>
+          · {algoLabel}
+        </span>
       </div>
 
+      <AlgorithmTabs
+        apiBase={apiBase}
+        activeId={activeAlgoId}
+        onSwitch={onSwitchAlgo}
+        switching={switchingAlgo}
+        switchMsg={switchAlgoMsg}
+      />
+
       <NaiveDebugPanel naive={naive} />
+
+      <AlgoExtrasPanel naive={naive} />
 
       <div className="naive-toolbar">
         <label className="naive-auto-label">
@@ -961,6 +1101,37 @@ export default function SmpsModules({ apiBase }) {
   const [cooldownSec, setCooldownSec] = useState(5);
   const lastAutoApplyRef = useRef(0);
 
+  // Algorithm registry / active-selection state.
+  const [activeAlgoId, setActiveAlgoId] = useState("naive");
+  const [switchingAlgo, setSwitchingAlgo] = useState(false);
+  const [switchAlgoMsg, setSwitchAlgoMsg] = useState("");
+
+  async function switchAlgorithm(algoId) {
+    if (switchingAlgo || algoId === activeAlgoId) return;
+    setSwitchingAlgo(true);
+    setSwitchAlgoMsg("");
+    try {
+      const res = await fetch(`${apiBase}/algo/active`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: algoId }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(detail || `switch failed: ${res.status}`);
+      }
+      const data = await res.json();
+      setActiveAlgoId(data.active || algoId);
+      setSwitchAlgoMsg(`switched to ${data.name || algoId}`);
+      window.setTimeout(() => setSwitchAlgoMsg(""), 2500);
+    } catch (err) {
+      console.error("Failed to switch algorithm", err);
+      setSwitchAlgoMsg(`switch failed: ${String(err.message || err)}`);
+    } finally {
+      setSwitchingAlgo(false);
+    }
+  }
+
   async function applyNaiveNow(opts = {}) {
     const { silent = false } = opts;
 
@@ -1061,6 +1232,9 @@ export default function SmpsModules({ apiBase }) {
           Array.isArray(exportData) ? exportData : [],
         ));
         setNaive(naiveData && !naiveData.error ? naiveData : null);
+        if (naiveData && !naiveData.error && naiveData.algo_id) {
+          setActiveAlgoId(naiveData.algo_id);
+        }
 
         ROLES.forEach((role) => {
           const row = data?.[role];
@@ -1124,6 +1298,10 @@ export default function SmpsModules({ apiBase }) {
         onAutoApplyChange={setAutoApply}
         cooldownSec={cooldownSec}
         onCooldownChange={setCooldownSec}
+        activeAlgoId={activeAlgoId}
+        onSwitchAlgo={switchAlgorithm}
+        switchingAlgo={switchingAlgo}
+        switchAlgoMsg={switchAlgoMsg}
       />
       {ROLES.map((role) => (
         <ModulePlotCard

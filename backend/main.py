@@ -25,11 +25,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from buysellalgorithm.naive import (  # noqa: E402
-    decide as naive_decide,
-    state_from_db_rows as naive_state_from_db_rows,
-    commands_to_payloads as naive_commands_to_payloads,
-    commands_to_diagnostics as naive_commands_to_diagnostics,
+    state_from_db_rows as algo_state_from_db_rows,
+    commands_to_payloads as algo_commands_to_payloads,
+    commands_to_diagnostics as algo_commands_to_diagnostics,
 )
+from buysellalgorithm import registry as algo_registry  # noqa: E402
 
 app = FastAPI()
 
@@ -238,10 +238,16 @@ def set_module_hosts(payload: dict):
 
 
 def _run_naive_from_db(grid_row, module_rows):
-    """Thin adapter: pulls rows → builds a GridState → calls naive.decide() →
-    formats the response shape the frontend expects.
+    """Thin adapter: pulls rows → builds a GridState → calls the
+    currently-active algorithm's decide() → formats the response shape
+    the frontend expects.
 
-    All policy lives in buysellalgorithm/naive.py — keep it there.
+    Algorithm lookup goes through ``buysellalgorithm.registry`` so the
+    operator can switch between Naive Baseline and Smart V1 (and future
+    algos) at runtime via the /algo/active endpoint.
+
+    The function name stays ``_run_naive_from_db`` for historical
+    reasons; nothing about it is naive-specific any more.
     """
     if grid_row is None:
         return {"error": "No grid snapshot available"}
@@ -249,17 +255,23 @@ def _run_naive_from_db(grid_row, module_rows):
     pv_row  = module_rows.get("pv")
     cap_row = module_rows.get("cap")
 
-    state = naive_state_from_db_rows(grid_row, pv_row, cap_row)
+    state = algo_state_from_db_rows(grid_row, pv_row, cap_row)
     if state is None:
         return {"error": "No grid snapshot available"}
 
-    cmd      = naive_decide(state)
-    payloads = naive_commands_to_payloads(cmd)
-    diag     = naive_commands_to_diagnostics(cmd)
+    active   = algo_registry.get_active()
+    cmd      = active.decide_fn(state)
+    # Ensure the algo_id is stamped even if the algo forgot to set it.
+    if not getattr(cmd, "algo_id", None) or cmd.algo_id == "naive":
+        cmd.algo_id = active.id
+    payloads = algo_commands_to_payloads(cmd)
+    diag     = algo_commands_to_diagnostics(cmd)
 
     return {
-        "tick":   state.tick,
-        "regime": cmd.regime,
+        "tick":     state.tick,
+        "regime":   cmd.regime,
+        "algo_id":  active.id,
+        "algo_name": active.name,
         # Raw inputs that fed the decision (so the dashboard can show what
         # the algo was looking at this tick).
         "inputs": {
@@ -505,6 +517,69 @@ def get_module_snapshots(role: str, limit: int = 60):
     return [_module_row_dict(r) for r in reversed(rows)]
 
 
+@app.get("/algo/list")
+def list_algorithms():
+    """Return every registered algorithm with the currently-active flag.
+
+    Frontend uses this to populate the algorithm tab strip. Stable shape:
+        {
+          "active": "<id>",
+          "algorithms": [
+            {"id": "naive", "name": "Naive Baseline", "description": "...",
+             "active": true|false},
+            ...
+          ]
+        }
+    """
+    aid = algo_registry.active_id()
+    return {
+        "active": aid,
+        "algorithms": [
+            {
+                "id":          a.id,
+                "name":        a.name,
+                "description": a.description,
+                "active":      a.id == aid,
+            }
+            for a in algo_registry.list_all()
+        ],
+    }
+
+
+@app.get("/algo/active")
+def get_active_algorithm():
+    a = algo_registry.get_active()
+    return {
+        "id":          a.id,
+        "name":        a.name,
+        "description": a.description,
+    }
+
+
+@app.post("/algo/active")
+def set_active_algorithm(payload: dict):
+    """Switch the active algorithm. Takes effect immediately — the next
+    /algo/naive or auto-loop tick uses the new policy.
+
+    Payload: {"id": "<algo_id>"}
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="payload must be a JSON object")
+    algo_id = payload.get("id")
+    if not algo_id or not isinstance(algo_id, str):
+        raise HTTPException(status_code=422, detail="missing 'id' field")
+    try:
+        info = algo_registry.set_active(algo_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {
+        "ok":          True,
+        "active":      info.id,
+        "name":        info.name,
+        "description": info.description,
+    }
+
+
 @app.get("/algo/naive")
 def get_naive_recommendation():
     db = SessionLocal()
@@ -581,6 +656,7 @@ def _compute_and_apply_naive(db, log_decision=False):
             save_naive_decision({
                 "tick":           recommendation.get("tick"),
                 "regime":         recommendation.get("regime"),
+                "algo_id":        recommendation.get("algo_id"),
                 "all_ok":         all_ok,
                 "inputs":         recommendation.get("inputs", {}),
                 "recommendation": recommendation,

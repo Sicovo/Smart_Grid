@@ -5,6 +5,11 @@ backend/__pycache__/
 
 # Database
 backend/smartgrid.db
+smartgrid.db
+
+# Runtime state — current active algorithm, persisted via /algo/active
+buysellalgorithm/active_algo.json
+buysellalgorithm/__pycache__/
 
 # Frontend
 frontend/node_modules/

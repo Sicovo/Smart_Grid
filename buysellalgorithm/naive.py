@@ -188,7 +188,17 @@ class Commands:
     export: ExportCmd = field(default_factory=ExportCmd)
 
     # --- Diagnostics (for the dashboard "what is the algo doing?" panel) ---
-    regime: str = "idle"          # "surplus" | "deficit" | "idle"
+    regime: str = "idle"          # "surplus" | "deficit" | "idle" | "arb_charge" | "arb_discharge"
+
+    # Which algorithm produced this command set. Set by registry-aware
+    # algorithms (smart_v1+); the naive baseline defaults to "naive" via
+    # commands_to_diagnostics if not explicitly set.
+    algo_id: str = "naive"
+
+    # Algorithm-specific diagnostics (free-form dict). Stable per-algo
+    # shape; the frontend renders whatever keys are present in a generic
+    # "extras" panel.
+    algo_extras: Dict = field(default_factory=dict)
 
     # Bus-side energy accounting (post PV derate).
     pv_panel_W:        float = 0.0     # raw panel reading
@@ -471,6 +481,7 @@ def commands_to_diagnostics(cmd: Commands) -> Dict:
     """Project the Commands dataclass to the JSON shape the dashboard
     debug panel consumes. Stable shape — frontend code reads these keys."""
     return {
+        "algo_id":          cmd.algo_id,
         "regime":           cmd.regime,
         "pv_panel_W":       round(cmd.pv_panel_W,       4),
         "pv_bus_W":         round(cmd.pv_bus_W,         4),
@@ -494,6 +505,7 @@ def commands_to_diagnostics(cmd: Commands) -> Dict:
             for d in cmd.active_deferrables
         ],
         "seconds_per_tick": SECONDS_PER_TICK,
+        "algo_extras":      cmd.algo_extras,
     }
 
 

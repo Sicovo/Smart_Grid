@@ -85,14 +85,19 @@ class ModuleSnapshot(Base):
 
 
 class NaiveDecision(Base):
-    """One row per naive auto-loop iteration that produced a /cmd dispatch.
-    Used to reconstruct the full-day decision history offline."""
+    """One row per algo auto-loop iteration that produced a /cmd dispatch.
+    Used to reconstruct the full-day decision history offline.
+
+    Table name kept as "naive_decisions" for back-compat; the column
+    ``algo_id`` records which algorithm (naive / smart_v1 / ...) produced
+    each row so the dashboard can filter or A/B compare runs."""
     __tablename__ = "naive_decisions"
 
     id         = Column(Integer, primary_key=True, index=True)
     timestamp  = Column(DateTime, default=datetime.utcnow)
     tick       = Column(Integer, index=True)
-    regime     = Column(String)         # "surplus" / "deficit" / "idle"
+    regime     = Column(String)         # "surplus" / "deficit" / "idle" / "arb_charge" / ...
+    algo_id    = Column(String, index=True, default="naive")  # "naive" / "smart_v1" / ...
     all_ok     = Column(Integer)        # 1 if all four module POSTs succeeded
     # Snapshot of inputs that fed the decision (pv_p, demand, vbus, v_cap, ...)
     inputs_json         = Column(String)
@@ -125,6 +130,22 @@ def _si(v):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Lightweight migration: add algo_id column to naive_decisions if an
+    # older DB pre-dates it. SQLite doesn't error if the column already
+    # exists once we've checked PRAGMA table_info.
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        cols = conn.execute(text("PRAGMA table_info(naive_decisions)")).fetchall()
+        col_names = {c[1] for c in cols}
+        if "algo_id" not in col_names:
+            try:
+                conn.execute(text(
+                    "ALTER TABLE naive_decisions ADD COLUMN algo_id TEXT DEFAULT 'naive'"
+                ))
+                conn.commit()
+                print("[db] migrated: added algo_id column to naive_decisions")
+            except Exception as exc:
+                print(f"[db] migration warning: {exc}")
 
 def save_snapshot(state):
     db = SessionLocal()
@@ -206,13 +227,14 @@ def save_module_snapshot(payload):
 
 
 def save_naive_decision(decision):
-    """Persist one naive decision. ``decision`` is a dict with keys:
-    tick, regime, all_ok, inputs, recommendation, applied."""
+    """Persist one algo decision. ``decision`` is a dict with keys:
+    tick, regime, algo_id, all_ok, inputs, recommendation, applied."""
     db = SessionLocal()
     try:
         row = NaiveDecision(
             tick                = _ii(decision.get("tick")),
             regime              = _si(decision.get("regime")),
+            algo_id             = _si(decision.get("algo_id")) or "naive",
             all_ok              = 1 if decision.get("all_ok") else 0,
             inputs_json         = json.dumps(decision.get("inputs", {})),
             recommendation_json = json.dumps(decision.get("recommendation", {})),
