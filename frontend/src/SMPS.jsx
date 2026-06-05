@@ -167,14 +167,29 @@ function buildOverviewSeries(gridSnapshots, pvHistory, gridHistory, exportHistor
   });
 }
 
-function OverviewGraphCard({ data }) {
+function OverviewGraphCard({ data, theme = "dark" }) {
   const latest = data[data.length - 1];
+  const isLightTheme = theme === "light";
+  const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
+  const titleColor = isLightTheme ? "#12325f" : "#00f0ff";
+  const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
+  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#27134d";
+  const tooltipLabel = isLightTheme ? "#1a2333" : "#ffffff";
+  const series = {
+    pv: isLightTheme ? "#1f7d3b" : "#00e676",
+    demand: isLightTheme ? "#167f91" : "#00f0ff",
+    def1: isLightTheme ? "#9b6b00" : "#ffc800",
+    def2: isLightTheme ? "#b85f00" : "#ff9100",
+    def3: isLightTheme ? "#2f7f7a" : "#5ec9c0",
+    export: isLightTheme ? "#b63a59" : "#ff4d6d",
+    import: isLightTheme ? "#7a4cb8" : "#b67ad9",
+  };
 
   return (
     <section className="card smps-plot-card smps-overview-card smps-overview-graph-card">
       <div className="smps-plot-header">
         <div>
-          <div className="smps-plot-title" style={{ color: "#00f0ff" }}>
+          <div className="smps-plot-title" style={{ color: titleColor }}>
             System Dispatch Overview
           </div>
           <div className="smps-plot-sub">
@@ -207,14 +222,14 @@ function OverviewGraphCard({ data }) {
           <LineChart data={data}>
             <XAxis
               dataKey="tick"
-              stroke="#a69ec4"
+              stroke={axisColor}
               tick={{ fontSize: 11 }}
               tickLine={false}
               axisLine={false}
             />
             <YAxis
               yAxisId="power"
-              stroke="#a69ec4"
+              stroke={axisColor}
               tick={{ fontSize: 11 }}
               tickLine={false}
               axisLine={false}
@@ -223,7 +238,7 @@ function OverviewGraphCard({ data }) {
             <YAxis
               yAxisId="energy"
               orientation="right"
-              stroke="#a69ec4"
+              stroke={axisColor}
               tick={{ fontSize: 11 }}
               tickLine={false}
               axisLine={false}
@@ -231,20 +246,20 @@ function OverviewGraphCard({ data }) {
             />
             <Tooltip
               contentStyle={{
-                backgroundColor: "#14052e",
-                borderColor: "#27134d",
+                backgroundColor: tooltipBackground,
+                borderColor: tooltipBorder,
                 borderRadius: "8px",
               }}
-              labelStyle={{ color: "#ffffff" }}
+              labelStyle={{ color: tooltipLabel }}
             />
-            <Legend wrapperStyle={{ color: "#a69ec4", fontSize: 12 }} />
-            <Line yAxisId="power" type="monotone" dataKey="pv_power_W" name="PV power" stroke="#00e676" strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="instant_demand_W" name="Demand" stroke="#00f0ff" strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="deferrable_1_J" name="Deferrable 1" stroke="#ffc800" strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="deferrable_2_J" name="Deferrable 2" stroke="#ff9100" strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="deferrable_3_J" name="Deferrable 3" stroke="#5ec9c0" strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="energy" type="monotone" dataKey="cumulative_export_J" name="Cumulative export" stroke="#ff4d6d" strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="energy" type="monotone" dataKey="cumulative_import_J" name="Cumulative import" stroke="#b67ad9" strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Legend wrapperStyle={{ color: axisColor, fontSize: 12 }} />
+            <Line yAxisId="power" type="monotone" dataKey="pv_power_W" name="PV power" stroke={series.pv} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="power" type="monotone" dataKey="instant_demand_W" name="Demand" stroke={series.demand} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="power" type="monotone" dataKey="deferrable_1_J" name="Deferrable 1" stroke={series.def1} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="power" type="monotone" dataKey="deferrable_2_J" name="Deferrable 2" stroke={series.def2} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="power" type="monotone" dataKey="deferrable_3_J" name="Deferrable 3" stroke={series.def3} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="energy" type="monotone" dataKey="cumulative_export_J" name="Cumulative export" stroke={series.export} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="energy" type="monotone" dataKey="cumulative_import_J" name="Cumulative import" stroke={series.import} strokeWidth={2} dot={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -377,6 +392,7 @@ function AlgoExtrasPanel({ naive }) {
 function NaiveDispatchCard({
   apiBase,
   naive,
+  theme = "dark",
   applyBusy,
   applyMsg,
   onApply,
@@ -413,7 +429,7 @@ function NaiveDispatchCard({
         switchMsg={switchAlgoMsg}
       />
 
-      <NaiveDebugPanel naive={naive} />
+      <NaiveDebugPanel naive={naive} theme={theme} />
 
       <AlgoExtrasPanel naive={naive} />
 
@@ -489,11 +505,13 @@ function NaiveDispatchCard({
 // ---- "What is the algorithm doing right now?" debug panel ----
 // Reads `naive.diagnostics` (populated by buysellalgorithm/naive.py's
 // commands_to_diagnostics) and renders a compact, glanceable view.
-function NaiveDebugPanel({ naive }) {
+function NaiveDebugPanel({ naive, theme = "dark" }) {
   const d   = naive?.diagnostics || {};
   const inp = naive?.inputs || {};
   const fmt = (v, n = 2, suf = "") =>
     typeof v === "number" ? `${v.toFixed(n)}${suf}` : "—";
+
+  const isLightTheme = theme === "light";
 
   const regime = d.regime || naive?.regime || "—";
   const regimeColor =
@@ -529,13 +547,18 @@ function NaiveDebugPanel({ naive }) {
     <div className="naive-debug" style={{ display: "grid", gap: 10, color: "inherit" }}>
       {/* Top status strip */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span
-          style={{
-            background: regimeColor, color: "#fff", padding: "2px 10px",
-            borderRadius: 4, fontWeight: 600, textTransform: "uppercase",
-            fontSize: 12, letterSpacing: 0.5,
-          }}
-        >
+            <span
+              style={{
+                background: regimeColor,
+                color: isLightTheme ? "#1a2333" : "#fff",
+                padding: "2px 10px",
+                borderRadius: 4,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                fontSize: 12,
+                letterSpacing: 0.5,
+              }}
+            >
           {regime}
         </span>
         <span style={{ fontSize: 13, ...mutedStyle }}>
@@ -974,10 +997,35 @@ function DataExportPanel({ apiBase }) {
   );
 }
 
-function ModulePlotCard({ role, data, history }) {
+function ModulePlotCard({ role, data, history, theme = "dark" }) {
   const status = getModuleStatus(data);
-  const lines = ROLE_LINES[role] || [];
-  const color = ROLE_COLORS[role];
+  const isLightTheme = theme === "light";
+  const color = isLightTheme
+    ? {
+        pv: "#1f7d3b",
+        grid: "#2e5f93",
+        export: "#7a4cb8",
+        cap: "#2f7f7a",
+        led: "#8b6a21",
+      }[role]
+    : ROLE_COLORS[role];
+  const lines = (ROLE_LINES[role] || []).map((line) => {
+    const darker = {
+      "#00e676": "#1f7d3b",
+      "#00f0ff": "#2e5f93",
+      "#ffc800": "#7d5a00",
+      "#ff9100": "#a65a00",
+      "#b67ad9": "#7a4cb8",
+      "#ff4d6d": "#b63a59",
+      "#5ec9c0": "#2f7f7a",
+    };
+
+    return isLightTheme ? { ...line, color: darker[line.color] || line.color } : line;
+  });
+  const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
+  const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
+  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#27134d";
+  const tooltipLabel = isLightTheme ? "#1a2333" : "#ffffff";
 
   const latestStats = {
     pv: [
@@ -1043,7 +1091,7 @@ function ModulePlotCard({ role, data, history }) {
               hide
             />
             <YAxis
-              stroke="#a69ec4"
+              stroke={axisColor}
               tick={{ fontSize: 11 }}
               tickLine={false}
               axisLine={false}
@@ -1051,11 +1099,11 @@ function ModulePlotCard({ role, data, history }) {
             />
             <Tooltip
               contentStyle={{
-                backgroundColor: "#14052e",
-                borderColor: "#27134d",
+                backgroundColor: tooltipBackground,
+                borderColor: tooltipBorder,
                 borderRadius: "8px",
               }}
-              labelStyle={{ color: "#ffffff" }}
+              labelStyle={{ color: tooltipLabel }}
             />
             {lines.map((line) => (
               <Line
@@ -1086,7 +1134,7 @@ function ModulePlotCard({ role, data, history }) {
   );
 }
 
-export default function SmpsModules({ apiBase }) {
+export default function SmpsModules({ apiBase, theme = "dark" }) {
   const [modules, setModules] = useState({});
   const histRef = useRef(Object.fromEntries(ROLES.map((r) => [r, []])));
   const [hist, setHist] = useState(Object.fromEntries(ROLES.map((r) => [r, []])));
@@ -1281,10 +1329,11 @@ export default function SmpsModules({ apiBase }) {
 
   return (
     <div className="smps-plots-page">
-      <OverviewGraphCard data={overviewData} />
+      <OverviewGraphCard data={overviewData} theme={theme} />
       <NaiveDispatchCard
         apiBase={apiBase}
         naive={naive}
+        theme={theme}
         applyBusy={applyBusy}
         applyMsg={applyMsg}
         onApply={applyNaiveNow}
@@ -1309,6 +1358,7 @@ export default function SmpsModules({ apiBase }) {
           role={role}
           data={modules?.[role]}
           history={hist[role]}
+          theme={theme}
         />
       ))}
     </div>

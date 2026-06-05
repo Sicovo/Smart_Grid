@@ -13,6 +13,7 @@ import SMPS from "./SMPS";
 import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+const THEME_STORAGE_KEY = "sg-theme";
 
 const MODULE_ROLES = ["pv", "grid", "export", "cap", "led"];
 const STALE_AFTER_MS = 5000;
@@ -35,7 +36,7 @@ function StatusDot({ status }) {
   return <span className={`module-status-dot module-status-${status}`} />;
 }
 
-function DashboardLayout() {
+function DashboardLayout({ theme, onToggleTheme }) {
   const [activeView, setActiveView] = useState("energy");
   const [latest, setLatest] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
@@ -100,6 +101,14 @@ function DashboardLayout() {
 
           <button className="topbar-link topbar-support">Support</button>
 
+          <button
+            className="theme-toggle"
+            onClick={onToggleTheme}
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          >
+            {theme === "dark" ? "Light mode" : "Dark mode"}
+          </button>
+
           <div className="topbar-user">
             <span>Watt's Up</span>
             <span className="topbar-avatar">W</span>
@@ -163,10 +172,10 @@ function DashboardLayout() {
                 Live telemetry from backend DB. Commands are proxyed through the
                 backend API.
               </p>
-              <SmpsModules apiBase={API_BASE} />
+              <SmpsModules apiBase={API_BASE} theme={theme} />
             </div>
           ) : (
-            <HomeContent latest={latest} snapshots={snapshots} modules={modules} />
+            <HomeContent latest={latest} snapshots={snapshots} modules={modules} theme={theme} />
           )}
         </main>
       </div>
@@ -174,10 +183,21 @@ function DashboardLayout() {
   );
 }
 
-function HomeContent({ latest, snapshots, modules }) {
+function HomeContent({ latest, snapshots, modules, theme = "dark" }) {
+  const isLightTheme = theme === "light";
+  const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
+  const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
+  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#27134d";
+  const tooltipText = isLightTheme ? "#1a2333" : "#e6e6e6";
+  const demandFill = isLightTheme ? "#1f4f83" : "#00f0ff";
+  const solarFill = isLightTheme ? "#7d5a00" : "#ffc800";
+  const accentText = isLightTheme ? "#12325f" : "#00f0ff";
+  const secondaryText = isLightTheme ? "#4f5f7c" : "#a69ec4";
+  const cardTitleColor = isLightTheme ? "#1a2333" : "#ffffff";
+
   return (
     <div className="dashboard-container">
-      <h1 className="page-title">My energy insights</h1>
+      <h1 className="page-title" style={{ color: cardTitleColor }}>My energy insights</h1>
 
       <div className="tabs-container">
         <div className="tab active">Day</div>
@@ -191,7 +211,8 @@ function HomeContent({ latest, snapshots, modules }) {
 
       <section className="card">
         <div className="card-header">
-          <span className="icon-green">●</span> Module Status
+          <span className="icon-green">●</span>
+          <span style={{ color: cardTitleColor }}>Module Status</span>
         </div>
 
         <div className="module-status-grid">
@@ -216,7 +237,8 @@ function HomeContent({ latest, snapshots, modules }) {
 
       <section className="card">
         <div className="card-header">
-          <span className="icon-cyan">✦</span> Grid State
+          <span className="icon-cyan">✦</span>
+          <span style={{ color: cardTitleColor }}>Grid State</span>
         </div>
 
         <div className="chart-wrapper">
@@ -224,23 +246,23 @@ function HomeContent({ latest, snapshots, modules }) {
             <BarChart data={snapshots}>
               <XAxis
                 dataKey="tick"
-                stroke="#a69ec4"
+                stroke={axisColor}
                 tick={{ fontSize: 12 }}
                 tickLine={false}
                 axisLine={false}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "#14052e",
-                  borderColor: "#27134d",
+                  backgroundColor: tooltipBackground,
+                  borderColor: tooltipBorder,
                   borderRadius: "8px",
                 }}
-                itemStyle={{ color: "#00f0ff" }}
+                itemStyle={{ color: tooltipText }}
               />
               <Bar
                 dataKey="instant_demand"
                 name="Demand (W)"
-                fill="#00f0ff"
+                fill={demandFill}
                 radius={[4, 4, 0, 0]}
               />
             </BarChart>
@@ -252,23 +274,23 @@ function HomeContent({ latest, snapshots, modules }) {
             <BarChart data={snapshots}>
               <XAxis
                 dataKey="tick"
-                stroke="#a69ec4"
+                stroke={axisColor}
                 tick={{ fontSize: 12 }}
                 tickLine={false}
                 axisLine={false}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "#14052e",
-                  borderColor: "#27134d",
+                  backgroundColor: tooltipBackground,
+                  borderColor: tooltipBorder,
                   borderRadius: "8px",
                 }}
-                itemStyle={{ color: "#ffc800" }}
+                itemStyle={{ color: tooltipText }}
               />
               <Bar
                 dataKey="sun"
                 name="Solar Input"
-                fill="#ffc800"
+                fill={solarFill}
                 radius={[4, 4, 0, 0]}
               />
             </BarChart>
@@ -277,7 +299,7 @@ function HomeContent({ latest, snapshots, modules }) {
 
         <div className="stats-row">
           <div className="stat-box">
-            <p>Current Demand</p>
+            <p style={{ color: secondaryText }}>Current Demand</p>
             <h3>
               {typeof latest?.instant_demand === "number"
                 ? `${latest.instant_demand.toFixed(2)} W`
@@ -286,7 +308,7 @@ function HomeContent({ latest, snapshots, modules }) {
           </div>
 
           <div className="stat-box">
-            <p>Solar Input</p>
+            <p style={{ color: secondaryText }}>Solar Input</p>
             <h3>
               {typeof latest?.sun === "number" ? `${latest.sun.toFixed(0)}%` : "-"}
             </h3>
@@ -296,7 +318,8 @@ function HomeContent({ latest, snapshots, modules }) {
 
       <section className="card">
         <div className="card-header">
-          <span className="icon-orange">⚡</span> Deferrable Loads
+          <span className="icon-orange">⚡</span>
+          <span style={{ color: cardTitleColor }}>Deferrable Loads</span>
         </div>
 
         {latest?.deferables?.length ? (
@@ -338,21 +361,21 @@ function HomeContent({ latest, snapshots, modules }) {
 
       <section className="two-col">
         <div className="insight-card">
-          <div className="sub">Current Market...</div>
-          <div className="val icon-cyan">
+          <div className="sub" style={{ color: secondaryText }}>Current Market...</div>
+          <div className="val" style={{ color: accentText }}>
             {typeof latest?.buy_price === "number"
               ? latest.buy_price.toFixed(0)
               : "-"}
           </div>
           <div>Buy Price (pence/kWh)</div>
-          <p style={{ fontSize: 12, color: "#a69ec4", marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: secondaryText, marginTop: 12 }}>
             Grid import price for this current tick.
           </p>
         </div>
 
         <div className="insight-card">
-          <div className="sub">Exporting power...</div>
-          <div className="val icon-green">
+          <div className="sub" style={{ color: secondaryText }}>Exporting power...</div>
+          <div className="val" style={{ color: isLightTheme ? "#1f7d3b" : "#00e676" }}>
             {typeof latest?.sell_price === "number"
               ? latest.sell_price.toFixed(0)
               : "-"}
@@ -361,7 +384,7 @@ function HomeContent({ latest, snapshots, modules }) {
           <p
             style={{
               fontSize: 12,
-              color: "#a69ec4",
+              color: secondaryText,
               marginTop: 12,
               position: "relative",
               zIndex: 2,
@@ -373,17 +396,17 @@ function HomeContent({ latest, snapshots, modules }) {
       </section>
 
       <section className="card">
-        <h2>Get your geek on</h2>
-        <p style={{ color: "#a69ec4", marginBottom: 20 }}>
+        <h2 style={{ color: cardTitleColor }}>Get your geek on</h2>
+        <p style={{ color: secondaryText, marginBottom: 20 }}>
           Backend snapshot dataset from the local DB.
         </p>
 
         <div
           style={{
             padding: "12px",
-            background: "rgba(255,255,255,0.05)",
+            background: isLightTheme ? "rgba(18,50,95,0.06)" : "rgba(255,255,255,0.05)",
             borderRadius: "8px",
-            color: "#00f0ff",
+            color: accentText,
           }}
         >
           ✦ {snapshots.length} data points loaded
@@ -397,30 +420,97 @@ function HomeContent({ latest, snapshots, modules }) {
   );
 }
 
-function SmpsStandalonePage() {
+function SmpsStandalonePage({ theme, onToggleTheme }) {
   return (
-    <div className="dashboard-container" style={{ maxWidth: "100%" }}>
-      <h1 className="page-title">SMPS Overview</h1>
-      <p className="date-subtitle">Module telemetry plots from backend DB.</p>
-      <SMPS apiBase={API_BASE} />
+    <div className="smps-route-shell">
+      <aside className="sidebar smps-route-sidebar">
+        <Link className="nav-item" to="/">
+          <span className="nav-icon">🏠</span>
+          <span>Home</span>
+        </Link>
+
+        <div className="nav-item active" aria-current="page">
+          <span className="nav-icon">📈</span>
+          <span>SMPS Overview</span>
+        </div>
+
+        <Link className="nav-item" to="/smpsmodule">
+          <span className="nav-icon">🔌</span>
+          <span>SMPS Modules</span>
+        </Link>
+
+        <button className="nav-item nav-item-button" onClick={onToggleTheme}>
+          <span className="nav-icon">◐</span>
+          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+        </button>
+      </aside>
+
+      <div className="smps-route-content dashboard-container" style={{ maxWidth: "100%" }}>
+        <h1 className="page-title">SMPS Overview</h1>
+        <p className="date-subtitle">Module telemetry plots from backend DB.</p>
+        <SMPS apiBase={API_BASE} theme={theme} />
+      </div>
     </div>
   );
 }
 
-function SmpsModuleStandalonePage() {
+function SmpsModuleStandalonePage({ theme, onToggleTheme }) {
   return (
-    <div className="smps-standalone-page">
-      <SmpsModules apiBase={API_BASE} />
+    <div className="smps-route-shell">
+      <aside className="sidebar smps-route-sidebar">
+        <Link className="nav-item" to="/">
+          <span className="nav-icon">🏠</span>
+          <span>Home</span>
+        </Link>
+
+        <Link className="nav-item" to="/smps">
+          <span className="nav-icon">📈</span>
+          <span>SMPS Overview</span>
+        </Link>
+
+        <div className="nav-item active" aria-current="page">
+          <span className="nav-icon">🔌</span>
+          <span>SMPS Modules</span>
+        </div>
+
+        <button className="nav-item nav-item-button" onClick={onToggleTheme}>
+          <span className="nav-icon">◐</span>
+          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+        </button>
+      </aside>
+
+      <div className="smps-route-content smps-standalone-page">
+        <SmpsModules apiBase={API_BASE} theme={theme} />
+      </div>
     </div>
   );
 }
 
 function App() {
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    return saved === "light" ? "light" : "dark";
+  });
+
+  useEffect(() => {
+    document.body.setAttribute("data-theme", theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
   return (
     <Routes>
-      <Route path="/" element={<DashboardLayout />} />
-      <Route path="/smps" element={<SmpsStandalonePage />} />
-      <Route path="/smpsmodule" element={<SmpsModuleStandalonePage />} />
+      <Route
+        path="/"
+        element={<DashboardLayout theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} />}
+      />
+      <Route
+        path="/smps"
+        element={<SmpsStandalonePage theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} />}
+      />
+      <Route
+        path="/smpsmodule"
+        element={<SmpsModuleStandalonePage theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} />}
+      />
     </Routes>
   );
 }
