@@ -28,6 +28,7 @@ from buysellalgorithm.naive import (  # noqa: E402
     state_from_db_rows as algo_state_from_db_rows,
     commands_to_payloads as algo_commands_to_payloads,
     commands_to_diagnostics as algo_commands_to_diagnostics,
+    record_served_from_commands as algo_record_served,
 )
 from buysellalgorithm import registry as algo_registry  # noqa: E402
 
@@ -606,22 +607,30 @@ def get_naive_recommendation():
 
 
 def _compute_and_apply_naive(db, log_decision=False):
-    """Pull latest state, compute the naive recommendation, dispatch to all
-    four actuators in parallel, optionally log the decision to the DB.
+    """Pull latest state, compute the active algorithm's recommendation,
+    dispatch to all four actuators in parallel, optionally log the
+    decision to the DB.
 
     Returns a dict with keys: ok, recommendation, applied. If there is no
     grid snapshot yet, returns {"error": ...}.
 
     Note: grid + export are ALWAYS enabled (passive symmetric-droop safety
-    net). The naive only varies cap.i_cmd and LED setpoints; grid/export
-    flow current only when cap saturates and the bus leaves the 9.9–10.1 V
-    deadband.
+    net). The algorithm only varies cap.i_cmd and LED setpoints; grid/
+    export flow current only when cap saturates and the bus leaves the
+    9.9–10.1 V deadband.
+
+    Side effect: on successful dispatch, credits each active deferable
+    with `rate_W × SECONDS_PER_TICK` joules in served_tracker, so the
+    NEXT tick computes rates from true remaining (Azure publishes the
+    original obligation every tick, not the remaining).
     """
     grid_row = (
         db.query(GridSnapshot)
         .order_by(desc(GridSnapshot.id))
         .first()
     )
+    if grid_row is None:
+        return {"error": "No grid snapshot available"}
 
     module_rows = {}
     for role in ["pv", "cap"]:
@@ -632,15 +641,42 @@ def _compute_and_apply_naive(db, log_decision=False):
             .first()
         )
 
-    recommendation = _run_naive_from_db(grid_row, module_rows)
-    if "error" in recommendation:
-        return {"error": recommendation["error"]}
+    # Re-do the decide step locally so we keep references to (state, cmd)
+    # for the served-tracker credit below. _run_naive_from_db only returns
+    # the JSON-serialisable dict, not the dataclasses.
+    state = algo_state_from_db_rows(
+        grid_row, module_rows.get("pv"), module_rows.get("cap")
+    )
+    if state is None:
+        return {"error": "No grid snapshot available"}
 
-    suggested = recommendation.get("suggested", {}) or {}
-    targets = {}
-    for role in ("cap", "led", "grid", "export"):
-        payload = suggested.get(role, {})
-        targets[role] = payload if isinstance(payload, dict) else {}
+    active_info = algo_registry.get_active()
+    cmd = active_info.decide_fn(state)
+    if not getattr(cmd, "algo_id", None) or cmd.algo_id == "naive":
+        cmd.algo_id = active_info.id
+    payloads = algo_commands_to_payloads(cmd)
+    diag     = algo_commands_to_diagnostics(cmd)
+    recommendation = {
+        "tick":      state.tick,
+        "regime":    cmd.regime,
+        "algo_id":   active_info.id,
+        "algo_name": active_info.name,
+        "inputs": {
+            "pv_power_W":       state.pv_p,
+            "demand_W":         state.demand_p,
+            "vbus_V":           state.vbus,
+            "v_cap_V":          state.v_cap,
+            "energy_cap_J":     state.energy_cap,
+            "deferables_count": len(state.deferrables),
+        },
+        "suggested":           payloads,
+        "diagnostics":         diag,
+        "remaining_surplus_W": diag["surplus_W"],
+        "remaining_deficit_W": diag["deficit_W"],
+        "served_deferrables":  [],
+    }
+
+    targets = {role: payloads.get(role, {}) for role in ("cap", "led", "grid", "export")}
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {
@@ -650,6 +686,15 @@ def _compute_and_apply_naive(db, log_decision=False):
         applied = {role: fut.result() for role, fut in futures.items()}
 
     all_ok = all(bool(r.get("ok")) for r in applied.values())
+
+    # Credit the served-J tracker ONLY on successful dispatch. If the
+    # apply failed (module offline / network drop), the obligation stays
+    # uncredited and the next tick's rate ramps up automatically.
+    if all_ok:
+        try:
+            algo_record_served(state, cmd)
+        except Exception as exc:
+            print(f"[algo] served-tracker credit failed: {exc}")
 
     if log_decision:
         try:
@@ -663,7 +708,7 @@ def _compute_and_apply_naive(db, log_decision=False):
                 "applied":        applied,
             })
         except Exception as exc:
-            print(f"[naive] decision log failed: {exc}")
+            print(f"[algo] decision log failed: {exc}")
 
     return {
         "ok":             all_ok,
