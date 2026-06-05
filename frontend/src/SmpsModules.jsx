@@ -253,10 +253,26 @@ function BusGauge({ vbus }) {
   );
 }
 
-function GlobalChart({ data }) {
+function GlobalChart({ data, theme = "dark" }) {
   const [visible, setVisible] = useState(() =>
     Object.fromEntries(GLOBAL_LINES.map((l) => [l.key, true]))
   );
+  const isLightTheme = theme === "light";
+  const axisColor = isLightTheme ? "#38475f" : "#666";
+  const tooltipBackground = isLightTheme ? "#ffffff" : "#0d0d0d";
+  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#2c2c2c";
+  const tooltipText = isLightTheme ? "#1a2333" : "#e6e6e6";
+  const referenceColor = isLightTheme ? "#4b6b98" : "#5a8ec9";
+  const lineColors = isLightTheme
+    ? {
+        vbus: "#5b6678",
+        i_pv: "#1f7d3b",
+        i_grid: "#2e5f93",
+        i_export: "#7a4cb8",
+        i_cap: "#2f7f7a",
+        i_led: "#9b6a21",
+      }
+    : Object.fromEntries(GLOBAL_LINES.map((l) => [l.key, l.color]));
 
   return (
     <div className="smps-global-chart">
@@ -269,7 +285,7 @@ function GlobalChart({ data }) {
               className={`smps-legend-toggle ${visible[l.key] ? "on" : ""}`}
               onClick={() => setVisible((p) => ({ ...p, [l.key]: !p[l.key] }))}
             >
-              <span className="smps-swatch" style={{ background: l.color }} />
+              <span className="smps-swatch" style={{ background: lineColors[l.key] }} />
               {l.label}
             </button>
           ))}
@@ -279,19 +295,19 @@ function GlobalChart({ data }) {
       <div className="smps-chart-box">
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: -16 }}>
-            <XAxis dataKey="t" tick={{ fontSize: 10, fill: "#666" }} />
-            <YAxis tick={{ fontSize: 10, fill: "#666" }} width={42} />
+            <XAxis dataKey="t" tick={{ fontSize: 10, fill: axisColor }} />
+            <YAxis tick={{ fontSize: 10, fill: axisColor }} width={42} />
             <Tooltip
               contentStyle={{
-                background: "#0d0d0d",
-                border: "1px solid #2c2c2c",
+                background: tooltipBackground,
+                border: `1px solid ${tooltipBorder}`,
                 borderRadius: 6,
                 fontSize: 11,
               }}
-              itemStyle={{ color: "#e6e6e6" }}
+              itemStyle={{ color: tooltipText }}
             />
-            <ReferenceLine y={9.5} stroke="#5a8ec9" strokeDasharray="3 3" />
-            <ReferenceLine y={10.5} stroke="#5a8ec9" strokeDasharray="3 3" />
+            <ReferenceLine y={9.5} stroke={referenceColor} strokeDasharray="3 3" />
+            <ReferenceLine y={10.5} stroke={referenceColor} strokeDasharray="3 3" />
 
             {GLOBAL_LINES.filter((l) => visible[l.key]).map((l) => (
               <Line
@@ -299,7 +315,7 @@ function GlobalChart({ data }) {
                 type="linear"
                 dataKey={l.key}
                 name={l.label}
-                stroke={l.color}
+                stroke={lineColors[l.key]}
                 strokeWidth={l.axis === "V" ? 2 : 1.5}
                 dot={false}
                 connectNulls={false}
@@ -867,9 +883,36 @@ function LEDControls({ onCmd }) {
 
 // ─── Module card ─────────────────────────────────────────────────────────────
 
-function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage }) {
-  const color = ROLE_COLORS[role];
-  const lines = MOD_CHART_LINES[role] || [];
+function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage, theme = "dark" }) {
+  const isLightTheme = theme === "light";
+  const color = isLightTheme
+    ? {
+        pv: "#1f7d3b",
+        grid: "#2e5f93",
+        export: "#7a4cb8",
+        cap: "#2f7f7a",
+        led: "#8b6a21",
+      }[role]
+    : ROLE_COLORS[role];
+  const lines = (MOD_CHART_LINES[role] || []).map((line) => {
+    const darker = {
+      "#6fb86f": "#1f7d3b",
+      "#e6e6e6": "#5b6678",
+      "#5a8ec9": "#2e5f93",
+      "#f5c84b": "#9b6b00",
+      "#d9a85a": "#8b6a21",
+      "#b67ad9": "#7a4cb8",
+      "#5ec9c0": "#2f7f7a",
+      "#e07070": "#b63a59",
+      "#d9c95a": "#9b7f24",
+    };
+
+    return isLightTheme ? { ...line, color: darker[line.color] || line.color } : line;
+  });
+  const axisColor = isLightTheme ? "#38475f" : "#555";
+  const tooltipBackground = isLightTheme ? "#ffffff" : "#0d0d0d";
+  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#2c2c2c";
+  const tooltipText = isLightTheme ? "#1a2333" : "#e6e6e6";
 
   const stats = {
     pv: <PVStats d={data} />,
@@ -940,15 +983,15 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage }
         <ResponsiveContainer width="100%" height={112}>
           <LineChart data={history} margin={{ top: 6, right: 10, bottom: 0, left: -18 }}>
             <XAxis hide />
-            <YAxis tick={{ fontSize: 9, fill: "#555" }} width={36} />
+            <YAxis tick={{ fontSize: 9, fill: axisColor }} width={36} />
             <Tooltip
               contentStyle={{
-                background: "#0d0d0d",
-                border: "1px solid #2c2c2c",
+                background: tooltipBackground,
+                border: `1px solid ${tooltipBorder}`,
                 borderRadius: 5,
                 fontSize: 11,
               }}
-              itemStyle={{ color: "#e6e6e6" }}
+              itemStyle={{ color: tooltipText }}
             />
             {lines.map((l) => (
               <Line
@@ -984,7 +1027,7 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage }
 
 // ─── Root component ──────────────────────────────────────────────────────────
 
-export default function SmpsModules({ apiBase = "" }) {
+export default function SmpsModules({ apiBase = "", theme = "dark" }) {
   const [hosts, setHosts] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("smps-module-hosts") || "null") || { ...DEFAULT_HOSTS };
@@ -1175,7 +1218,7 @@ export default function SmpsModules({ apiBase = "" }) {
       )}
 
       <BusGauge vbus={vbus} />
-      <GlobalChart data={globalHist} />
+      <GlobalChart data={globalHist} theme={theme} />
 
       <div className="smps-grid">
         {ROLES.map((role) => (
@@ -1188,6 +1231,7 @@ export default function SmpsModules({ apiBase = "" }) {
             host={hosts[role] || ""}
             onCmd={(payload) => sendCmd(role, payload)}
             lastBusVoltage={vbus}
+            theme={theme}
           />
         ))}
       </div>
