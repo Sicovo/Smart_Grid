@@ -7,7 +7,6 @@ import sys
 import threading
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,7 +33,18 @@ from buysellalgorithm import registry as algo_registry  # noqa: E402
 
 app = FastAPI()
 
-MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "2"))
+# Per-POST timeout to the Pico /cmd endpoints. Bumped from 2 → 4 s on
+# 2026-06-05 after a run showed 32% of dispatches timing out under
+# 4-way parallel pressure (see _dispatch_module_cmds below). Picos
+# occasionally take >2 s to answer when WiFi is contended, but ~rarely
+# >4 s.
+MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "4"))
+
+# Spacing between sequential POSTs to different modules — small enough
+# that the full dispatch still finishes well inside the 1 s auto-loop
+# tick, large enough that the Pico AP doesn't see four near-simultaneous
+# associations and drop one.
+MODULE_DISPATCH_GAP_S = float(os.getenv("MODULE_DISPATCH_GAP_S", "0.05"))
 MODULE_CMD_TARGETS = {
     "pv": os.getenv("PICO_PV_URL", "http://192.168.137.24"),
     "grid": os.getenv("PICO_GRID_URL", "http://192.168.137.23"),
@@ -236,6 +246,42 @@ def set_module_hosts(payload: dict):
         "ok": True,
         "hosts": {role: MODULE_CMD_TARGETS.get(role, "") for role in MODULE_CMD_ROLES},
     }
+
+
+#: Dispatch order — LED first because:
+#  1. It's the only actuator that dissipates deferable energy. We gate
+#     the served-J credit on its POST result, so issuing it first means
+#     the credit decision is determined the moment we hear back.
+#  2. Cap is the second active actuator (commanded current). Grid and
+#     export are passive droop — their commands set vb_target and
+#     i_ref_max once and the firmware does the work; a missed POST is
+#     self-correcting because the bus deadband still holds.
+_DISPATCH_ORDER = ("led", "cap", "grid", "export")
+
+
+def _dispatch_module_cmds(targets):
+    """Issue /cmd POSTs to each role SEQUENTIALLY with a small gap.
+
+    Background: the 2026-06-05 run measured 32% all_ok=False over 97
+    decisions, every failure a "timed out" against one of the four Pico
+    HTTP servers. Root cause was the previous ThreadPoolExecutor(4)
+    pattern — four near-simultaneous WiFi transmits to the same AP cause
+    enough collision/contention that one or two POSTs miss the 2-second
+    timeout window. Serialising with a 50 ms gap eliminates the
+    contention and adds at most ~200 ms to a successful tick (well
+    inside the 1 s auto-loop and 5 s Azure tick).
+
+    Returns a {role: response_dict} map in the same shape as the old
+    parallel path so callers don't change.
+    """
+    applied = {}
+    last_idx = len(_DISPATCH_ORDER) - 1
+    for i, role in enumerate(_DISPATCH_ORDER):
+        payload = targets.get(role, {})
+        applied[role] = _post_module_cmd(role, payload)
+        if i < last_idx and MODULE_DISPATCH_GAP_S > 0:
+            time.sleep(MODULE_DISPATCH_GAP_S)
+    return applied
 
 
 def _run_naive_from_db(grid_row, module_rows):
@@ -676,21 +722,22 @@ def _compute_and_apply_naive(db, log_decision=False):
         "served_deferrables":  [],
     }
 
-    targets = {role: payloads.get(role, {}) for role in ("cap", "led", "grid", "export")}
+    targets = {role: payloads.get(role, {}) for role in _DISPATCH_ORDER}
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {
-            role: ex.submit(_post_module_cmd, role, payload)
-            for role, payload in targets.items()
-        }
-        applied = {role: fut.result() for role, fut in futures.items()}
+    applied = _dispatch_module_cmds(targets)
 
     all_ok = all(bool(r.get("ok")) for r in applied.values())
 
-    # Credit the served-J tracker ONLY on successful dispatch. If the
-    # apply failed (module offline / network drop), the obligation stays
-    # uncredited and the next tick's rate ramps up automatically.
-    if all_ok:
+    # Credit the served-J tracker on LED dispatch success specifically.
+    # LED is the actuator that physically dissipates the deferable
+    # energy; if its POST returned 2xx the deferable WAS served, even if
+    # grid or export hit a transient WiFi timeout (those are passive
+    # droop — a missed setpoint update is self-correcting via the bus
+    # deadband). Gating on all_ok would lose credit on perfectly-served
+    # ticks and force the next tick to dispatch the same energy again,
+    # which is the bug that surfaced in the 2026-06-05 run.
+    led_ok = bool(applied.get("led", {}).get("ok"))
+    if led_ok:
         try:
             algo_record_served(state, cmd)
         except Exception as exc:
