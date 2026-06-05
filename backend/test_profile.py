@@ -1,9 +1,20 @@
 import math
+import random
 
 
 TEST_TICK_SECONDS = 5.0
+TEST_TICKS_PER_DAY = 60
 _SUNRISE_TICK = 15
 _DAY_LENGTH_TICKS = 30
+
+# Deferrable demand model aligned to the provided reference service.
+# Each tuple is: ((start_min, start_max), (end_min, end_max), (energy_min, energy_max))
+TEST_DEFERRABLE_SPECS = [
+    ((0, 0), (TEST_TICKS_PER_DAY - 1, TEST_TICKS_PER_DAY - 1), (50.0, 50.0)),
+    ((40, 50), (TEST_TICKS_PER_DAY - 1, TEST_TICKS_PER_DAY - 1), (20.0, 40.0)),
+    ((0, 70), (30, TEST_TICKS_PER_DAY - 1), (10.0, 50.0)),
+]
+TEST_MIN_DEMAND_DURATION = 10
 
 
 def scheduled_sun_intensity(tick):
@@ -86,3 +97,26 @@ TEST_SUN_CYCLE = [
 ]
 
 TEST_DEMAND_PERIOD_TICKS = len(TEST_DEMAND_CYCLE)
+
+
+def get_test_deferrables(day):
+    """Return deterministic per-day deferrables for test mode replay."""
+    random.seed(int(day))
+    data = []
+    for start_range, end_range, energy_range in TEST_DEFERRABLE_SPECS:
+        start = random.randint(int(start_range[0]), int(start_range[1]))
+        end = random.randint(int(end_range[0]), int(end_range[1]))
+        energy = random.uniform(float(energy_range[0]), float(energy_range[1]))
+
+        if end - start < TEST_MIN_DEMAND_DURATION:
+            if start + TEST_MIN_DEMAND_DURATION >= TEST_TICKS_PER_DAY:
+                start = end - TEST_MIN_DEMAND_DURATION
+            else:
+                end = start + TEST_MIN_DEMAND_DURATION
+
+        # Keep window bounded to the replay day tick range.
+        start = max(0, min(TEST_TICKS_PER_DAY - 1, int(start)))
+        end = max(0, min(TEST_TICKS_PER_DAY - 1, int(end)))
+
+        data.append({"start": start, "end": end, "energy": float(energy)})
+    return data
