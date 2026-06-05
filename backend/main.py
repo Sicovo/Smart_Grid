@@ -7,7 +7,6 @@ import sys
 import threading
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -29,6 +28,7 @@ from buysellalgorithm.naive import (  # noqa: E402
     state_from_db_rows as algo_state_from_db_rows,
     commands_to_payloads as algo_commands_to_payloads,
     commands_to_diagnostics as algo_commands_to_diagnostics,
+    record_served_from_commands as algo_record_served,
 )
 from buysellalgorithm import registry as algo_registry  # noqa: E402
 
@@ -36,7 +36,18 @@ app = FastAPI()
 
 POLLER_TEST_MODE_FILE = Path(__file__).with_name("poller_test_mode.json")
 
-MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "2"))
+# Per-POST timeout to the Pico /cmd endpoints. Bumped from 2 → 4 s on
+# 2026-06-05 after a run showed 32% of dispatches timing out under
+# 4-way parallel pressure (see _dispatch_module_cmds below). Picos
+# occasionally take >2 s to answer when WiFi is contended, but ~rarely
+# >4 s.
+MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "4"))
+
+# Spacing between sequential POSTs to different modules — small enough
+# that the full dispatch still finishes well inside the 1 s auto-loop
+# tick, large enough that the Pico AP doesn't see four near-simultaneous
+# associations and drop one.
+MODULE_DISPATCH_GAP_S = float(os.getenv("MODULE_DISPATCH_GAP_S", "0.05"))
 MODULE_CMD_TARGETS = {
     "pv": os.getenv("PICO_PV_URL", "http://192.168.137.24"),
     "grid": os.getenv("PICO_GRID_URL", "http://192.168.137.23"),
@@ -253,6 +264,42 @@ def set_module_hosts(payload: dict):
         "ok": True,
         "hosts": {role: MODULE_CMD_TARGETS.get(role, "") for role in MODULE_CMD_ROLES},
     }
+
+
+#: Dispatch order — LED first because:
+#  1. It's the only actuator that dissipates deferable energy. We gate
+#     the served-J credit on its POST result, so issuing it first means
+#     the credit decision is determined the moment we hear back.
+#  2. Cap is the second active actuator (commanded current). Grid and
+#     export are passive droop — their commands set vb_target and
+#     i_ref_max once and the firmware does the work; a missed POST is
+#     self-correcting because the bus deadband still holds.
+_DISPATCH_ORDER = ("led", "cap", "grid", "export")
+
+
+def _dispatch_module_cmds(targets):
+    """Issue /cmd POSTs to each role SEQUENTIALLY with a small gap.
+
+    Background: the 2026-06-05 run measured 32% all_ok=False over 97
+    decisions, every failure a "timed out" against one of the four Pico
+    HTTP servers. Root cause was the previous ThreadPoolExecutor(4)
+    pattern — four near-simultaneous WiFi transmits to the same AP cause
+    enough collision/contention that one or two POSTs miss the 2-second
+    timeout window. Serialising with a 50 ms gap eliminates the
+    contention and adds at most ~200 ms to a successful tick (well
+    inside the 1 s auto-loop and 5 s Azure tick).
+
+    Returns a {role: response_dict} map in the same shape as the old
+    parallel path so callers don't change.
+    """
+    applied = {}
+    last_idx = len(_DISPATCH_ORDER) - 1
+    for i, role in enumerate(_DISPATCH_ORDER):
+        payload = targets.get(role, {})
+        applied[role] = _post_module_cmd(role, payload)
+        if i < last_idx and MODULE_DISPATCH_GAP_S > 0:
+            time.sleep(MODULE_DISPATCH_GAP_S)
+    return applied
 
 
 def _run_naive_from_db(grid_row, module_rows):
@@ -647,22 +694,30 @@ def get_naive_recommendation():
 
 
 def _compute_and_apply_naive(db, log_decision=False):
-    """Pull latest state, compute the naive recommendation, dispatch to all
-    four actuators in parallel, optionally log the decision to the DB.
+    """Pull latest state, compute the active algorithm's recommendation,
+    dispatch to all four actuators in parallel, optionally log the
+    decision to the DB.
 
     Returns a dict with keys: ok, recommendation, applied. If there is no
     grid snapshot yet, returns {"error": ...}.
 
     Note: grid + export are ALWAYS enabled (passive symmetric-droop safety
-    net). The naive only varies cap.i_cmd and LED setpoints; grid/export
-    flow current only when cap saturates and the bus leaves the 9.9–10.1 V
-    deadband.
+    net). The algorithm only varies cap.i_cmd and LED setpoints; grid/
+    export flow current only when cap saturates and the bus leaves the
+    9.9–10.1 V deadband.
+
+    Side effect: on successful dispatch, credits each active deferable
+    with `rate_W × SECONDS_PER_TICK` joules in served_tracker, so the
+    NEXT tick computes rates from true remaining (Azure publishes the
+    original obligation every tick, not the remaining).
     """
     grid_row = (
         db.query(GridSnapshot)
         .order_by(desc(GridSnapshot.id))
         .first()
     )
+    if grid_row is None:
+        return {"error": "No grid snapshot available"}
 
     module_rows = {}
     for role in ["pv", "cap"]:
@@ -673,24 +728,61 @@ def _compute_and_apply_naive(db, log_decision=False):
             .first()
         )
 
-    recommendation = _run_naive_from_db(grid_row, module_rows)
-    if "error" in recommendation:
-        return {"error": recommendation["error"]}
+    # Re-do the decide step locally so we keep references to (state, cmd)
+    # for the served-tracker credit below. _run_naive_from_db only returns
+    # the JSON-serialisable dict, not the dataclasses.
+    state = algo_state_from_db_rows(
+        grid_row, module_rows.get("pv"), module_rows.get("cap")
+    )
+    if state is None:
+        return {"error": "No grid snapshot available"}
 
-    suggested = recommendation.get("suggested", {}) or {}
-    targets = {}
-    for role in ("cap", "led", "grid", "export"):
-        payload = suggested.get(role, {})
-        targets[role] = payload if isinstance(payload, dict) else {}
+    active_info = algo_registry.get_active()
+    cmd = active_info.decide_fn(state)
+    if not getattr(cmd, "algo_id", None) or cmd.algo_id == "naive":
+        cmd.algo_id = active_info.id
+    payloads = algo_commands_to_payloads(cmd)
+    diag     = algo_commands_to_diagnostics(cmd)
+    recommendation = {
+        "tick":      state.tick,
+        "regime":    cmd.regime,
+        "algo_id":   active_info.id,
+        "algo_name": active_info.name,
+        "inputs": {
+            "pv_power_W":       state.pv_p,
+            "demand_W":         state.demand_p,
+            "vbus_V":           state.vbus,
+            "v_cap_V":          state.v_cap,
+            "energy_cap_J":     state.energy_cap,
+            "deferables_count": len(state.deferrables),
+        },
+        "suggested":           payloads,
+        "diagnostics":         diag,
+        "remaining_surplus_W": diag["surplus_W"],
+        "remaining_deficit_W": diag["deficit_W"],
+        "served_deferrables":  [],
+    }
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {
-            role: ex.submit(_post_module_cmd, role, payload)
-            for role, payload in targets.items()
-        }
-        applied = {role: fut.result() for role, fut in futures.items()}
+    targets = {role: payloads.get(role, {}) for role in _DISPATCH_ORDER}
+
+    applied = _dispatch_module_cmds(targets)
 
     all_ok = all(bool(r.get("ok")) for r in applied.values())
+
+    # Credit the served-J tracker on LED dispatch success specifically.
+    # LED is the actuator that physically dissipates the deferable
+    # energy; if its POST returned 2xx the deferable WAS served, even if
+    # grid or export hit a transient WiFi timeout (those are passive
+    # droop — a missed setpoint update is self-correcting via the bus
+    # deadband). Gating on all_ok would lose credit on perfectly-served
+    # ticks and force the next tick to dispatch the same energy again,
+    # which is the bug that surfaced in the 2026-06-05 run.
+    led_ok = bool(applied.get("led", {}).get("ok"))
+    if led_ok:
+        try:
+            algo_record_served(state, cmd)
+        except Exception as exc:
+            print(f"[algo] served-tracker credit failed: {exc}")
 
     if log_decision:
         try:
@@ -704,7 +796,7 @@ def _compute_and_apply_naive(db, log_decision=False):
                 "applied":        applied,
             })
         except Exception as exc:
-            print(f"[naive] decision log failed: {exc}")
+            print(f"[algo] decision log failed: {exc}")
 
     return {
         "ok":             all_ok,
