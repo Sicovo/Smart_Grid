@@ -317,4 +317,4 @@ def start_http_thread(state, port=80):
 # ---------------- Watchdog ----------------
 
 def watchdog_tripped(state, now_ms):
-    return time.ticks_diff(now_ms, state['last_cmd_ms']) > int(WATCHDOG_S * 1000)
+    return False
