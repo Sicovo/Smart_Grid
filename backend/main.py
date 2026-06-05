@@ -19,6 +19,7 @@ from sqlalchemy import desc
 
 from db import (SessionLocal, GridSnapshot, ModuleSnapshot, NaiveDecision,
                 init_db, save_module_snapshot, save_naive_decision)
+from test_profile import TEST_DEMAND_PERIOD_TICKS
 
 # Make sibling `buysellalgorithm/` importable.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +34,8 @@ from buysellalgorithm import registry as algo_registry  # noqa: E402
 
 app = FastAPI()
 
+POLLER_TEST_MODE_FILE = Path(__file__).with_name("poller_test_mode.json")
+
 MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "2"))
 MODULE_CMD_TARGETS = {
     "pv": os.getenv("PICO_PV_URL", "http://192.168.137.24"),
@@ -43,6 +46,21 @@ MODULE_CMD_TARGETS = {
     "lux": os.getenv("PICO_LUX_URL", "http://192.168.137.26"),
 }
 MODULE_CMD_ROLES = tuple(MODULE_CMD_TARGETS.keys())
+
+
+def _read_poller_test_mode():
+    try:
+        payload = json.loads(POLLER_TEST_MODE_FILE.read_text(encoding="utf-8"))
+        return bool(payload.get("enabled", False))
+    except Exception:
+        return False
+
+
+def _write_poller_test_mode(enabled):
+    POLLER_TEST_MODE_FILE.write_text(
+        json.dumps({"enabled": bool(enabled)}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _f(value, default=0.0):
@@ -349,6 +367,8 @@ def start_smps_serial_ingest():
 @app.on_event("startup")
 def startup_event():
     init_db()
+    if not POLLER_TEST_MODE_FILE.exists():
+        _write_poller_test_mode(False)
     start_smps_serial_ingest()
 
 app.add_middleware(
@@ -362,6 +382,27 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {"message": "Smart Grid Backend is running"}
+
+
+@app.get("/poller/test-mode")
+def get_poller_test_mode():
+    return {
+        "enabled": _read_poller_test_mode(),
+        "period_ticks": TEST_DEMAND_PERIOD_TICKS,
+    }
+
+
+@app.post("/poller/test-mode")
+def set_poller_test_mode(payload: dict):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="payload must be a JSON object")
+    enabled = bool(payload.get("enabled", False))
+    _write_poller_test_mode(enabled)
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "period_ticks": TEST_DEMAND_PERIOD_TICKS,
+    }
 
 @app.get("/snapshots")
 def get_snapshots(limit: int = 50):
