@@ -393,11 +393,31 @@ _p_avg3s    = 0.0
 _prev_mode  = None
 
 def _reset_controllers():
+    """Zero the outer V-loop and inner I-loop integrators + i_ref, AND
+    seed _pwm_out at the boost equilibrium duty (1 - V_panel/V_bus)
+    so the high-side MOSFET isn't clamped fully on between trip and
+    the next inner-loop iteration.
+
+    Same reasoning as cap_smps: PWM_MIN=0 in this synchronous boost
+    holds HMOS on continuously, which connects V_bus to the panel
+    side through the inductor. With panel input caps empty (or a
+    disconnected panel) the bus dumps into them down a ~50 mΩ DCR
+    path, and the upstream PSU trips. Seeding at D_ff makes the
+    inductor see ~zero average volt-seconds on the first PWM cycle,
+    so the PI starts from a neutral operating point and the bus
+    holds."""
     global _v_err_int, _i_err_int, _i_ref, _pwm_out
     _v_err_int = 0.0
     _i_err_int = 0.0
     _i_ref     = 0.0
-    _pwm_out   = PWM_MIN
+    # Use the EMA-filtered panel voltage if we have one; otherwise
+    # fall back to the MPPT target (5.15 V, the typical equilibrium).
+    v_panel_now = _vb_lp if _vb_lp > 1.0 else VMPP_TARGET
+    # Bus is held at ~10 V by grid/export droop. The pv firmware
+    # doesn't filter _va so use the nominal.
+    v_bus_now = 10.0
+    d_ff = sat(1.0 - v_panel_now / v_bus_now, 1.0, 0.0)
+    _pwm_out = sat(d_ff * 65535, PWM_MAX, PWM_MIN)
 
 # ============================================================
 # Timer flag — teammate's fix:
@@ -600,6 +620,14 @@ try:
             cmd['reset_trip'] = 0
             _reset_controllers()
             _po_reseed(cmd.get('vmpp_target', VMPP_TARGET))
+            # CRITICAL: push the safe seeded duty to the PWM hardware
+            # immediately. Without this, the gate driver sits at
+            # whatever the trip handler last wrote (PWM_MIN = HMOS
+            # clamped on) for one full inner-loop iteration (~1 ms)
+            # before the control loop catches up. That 1 ms of
+            # HMOS-on collapses the bus by dumping it into the panel
+            # input cap through the inductor.
+            pwm.duty_u16(int(_pwm_out))
 
         # ---- Telemetry (every tick) ----
         # v_panel / iL / p_panel report the EMA-filtered values so the

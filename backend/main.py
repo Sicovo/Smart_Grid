@@ -907,16 +907,58 @@ def auto_naive_start():
     return {"ok": True, "state": dict(_auto_state)}
 
 
+_SAFE_DEFAULTS = {
+    # Cap: idle (no commanded current — let the cap sit at whatever V it's at).
+    "cap":    {"enable": 1, "i_cmd": 0.0},
+    # LED: all channels off (no dissipation, so the bus doesn't get drained
+    # by a stale setpoint after the algo stops).
+    "led":    {"enable": 1, "p_red": 0.0, "p_yel": 0.0, "p_grn": 0.0},
+    # Grid + Export: passive droop targets. These are what the algorithm
+    # would normally hold them at anyway, but explicitly re-sending on
+    # stop makes the post-stop state deterministic.
+    "grid":   {"enable": 1, "vb_target": 9.9,  "i_ref_max": 2.0},
+    "export": {"enable": 1, "vb_target": 10.1, "i_ref_max": 2.0},
+}
+
+
 @app.post("/algo/auto/stop")
 def auto_naive_stop():
+    """Stop the auto-loop AND broadcast safe-default commands to every
+    actuator. Without this, the watchdog being disabled in the firmware
+    (firmware/*/common.py: ``def watchdog_tripped: return False``) means
+    each module keeps executing whatever was last commanded —
+    typically a non-zero cap.i_cmd that slowly discharges or charges
+    the supercap out of its operating window, eventually tripping on
+    overcurrent / bus_collapse / cap_overvolt and requiring a manual
+    reset_trip (which used to itself trip the PSU — see the firmware
+    _reset_controllers() fix).
+
+    Safe defaults:
+      cap.i_cmd = 0    → cap idles
+      led.p_*   = 0    → no dissipation
+      grid/export      → droop targets (what they're at anyway)
+    """
+    was_running = False
     with _auto_lock:
-        if not _auto_state["running"]:
-            return {"ok": True, "already_stopped": True,
-                    "state": dict(_auto_state)}
-        _auto_stop_event.set()
-        _auto_state["running"]    = False
-        _auto_state["stopped_at"] = datetime.utcnow().isoformat()
-    return {"ok": True, "state": dict(_auto_state)}
+        if _auto_state["running"]:
+            was_running = True
+            _auto_stop_event.set()
+            _auto_state["running"]    = False
+            _auto_state["stopped_at"] = datetime.utcnow().isoformat()
+
+    # Push safe defaults regardless of prior run state — pressing Stop
+    # twice should still be a clean "everything to safe defaults", not
+    # a no-op.
+    safe_applied = _dispatch_module_cmds(_SAFE_DEFAULTS)
+    safe_ok = all(bool(r.get("ok")) for r in safe_applied.values())
+
+    return {
+        "ok":               True,
+        "was_running":      was_running,
+        "safe_defaults_ok": safe_ok,
+        "safe_applied":     safe_applied,
+        "state":            dict(_auto_state),
+    }
 
 
 @app.get("/algo/auto/status")

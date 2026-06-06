@@ -288,9 +288,32 @@ def _test_finalize_eta():
     _test_eta_roundtrip      = (_test_E_out / _test_E_in) if _test_E_in > 1e-6 else 0.0
 
 def _reset_controllers():
+    """Zero the inner PI integrator AND seed _pwm_out at the boost
+    equilibrium duty (1 - VB_NOMINAL/V_cap) so the high-side MOSFET
+    isn't clamped fully on into an empty supercap on the next
+    dispatched PWM cycle.
+
+    The previous default (_pwm_out = PWM_MIN = 0) is the EXACT failure
+    mode the inner-loop comment a few hundred lines down warns about:
+    PWM_MIN clamps HMOS on, which in this sync-boost topology shorts
+    the bus through the inductor into the supercap whenever V_cap is
+    well below V_bus. With an empty cap (V_cap ≈ 0 V) and the bus at
+    ~10 V, the result is an uncontrolled inrush down a ~50 mΩ
+    inductor DCR + 4 Ω ESR — measured to trip a 20 A bench PSU when
+    reset_trip is pressed after the algorithm has stopped and the cap
+    has leaked / discharged out of its operating window.
+
+    Seeding at D_ff makes the inductor see ~zero average volt-seconds
+    on the very first PWM cycle, so the PI starts from a neutral
+    operating point and the bus stays put."""
     global _i_err_int, _pwm_out
     _i_err_int = 0.0
-    _pwm_out   = PWM_MIN
+    # Fall back to nominal if the EMA filter hasn't seen its first
+    # sample yet (very early cold boot). Clamp inside the controller's
+    # operating envelope.
+    v_cap_now = _va_lp if _va_lp > 1.0 else 12.0
+    d_ff = sat(1.0 - VB_NOMINAL / v_cap_now, 1.0, 0.0)
+    _pwm_out = sat(d_ff * 65535, PWM_MAX, PWM_MIN)
 
 # ---------------- Soft taper + SoC helpers ----------------
 
@@ -409,6 +432,16 @@ try:
                 _trip_reason = ''
                 _reset_controllers()
                 _test_mark_aborted()
+                # CRITICAL: push the safe seeded duty to the PWM hardware
+                # immediately. Without this, the gate driver sits at
+                # whatever the trip handler last wrote (PWM_MIN = HMOS
+                # clamped on) for one full inner-loop iteration (~1 ms)
+                # before the control loop catches up. With an empty cap
+                # that 1 ms of HMOS-on dumps the bus through the
+                # inductor at >10 A and trips the upstream PSU. The
+                # seeded duty (boost equilibrium) puts ~zero average
+                # volt-seconds across the inductor so the bus stays put.
+                pwm.duty_u16(int(_pwm_out))
 
             # Cycle-test commands (one-shot consume; payload values are
             # latched into the test state at start). Also zeros the user's
