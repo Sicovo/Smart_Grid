@@ -41,6 +41,40 @@ function DashboardLayout({ theme, onToggleTheme }) {
   const [latest, setLatest] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [modules, setModules] = useState({});
+  const [pollerTestMode, setPollerTestMode] = useState(false);
+  const [pollerTestModeBusy, setPollerTestModeBusy] = useState(false);
+
+  async function fetchPollerTestMode() {
+    try {
+      const res = await fetch(`${API_BASE}/poller/test-mode`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setPollerTestMode(Boolean(data?.enabled));
+    } catch (err) {
+      console.error("Failed to fetch poller test mode", err);
+    }
+  }
+
+  async function togglePollerTestMode() {
+    const next = !pollerTestMode;
+    setPollerTestModeBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/poller/test-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) {
+        throw new Error(`toggle failed: ${res.status}`);
+      }
+      const data = await res.json();
+      setPollerTestMode(Boolean(data?.enabled));
+    } catch (err) {
+      console.error("Failed to toggle poller test mode", err);
+    } finally {
+      setPollerTestModeBusy(false);
+    }
+  }
 
   async function fetchData() {
     try {
@@ -74,8 +108,13 @@ function DashboardLayout({ theme, onToggleTheme }) {
 
   useEffect(() => {
     fetchData();
+    fetchPollerTestMode();
     const interval = setInterval(fetchData, 1000);
-    return () => clearInterval(interval);
+    const testModeInterval = setInterval(fetchPollerTestMode, 3000);
+    return () => {
+      clearInterval(interval);
+      clearInterval(testModeInterval);
+    };
   }, []);
 
   return (
@@ -100,6 +139,19 @@ function DashboardLayout({ theme, onToggleTheme }) {
           <div className="topbar-spacer" />
 
           <button className="topbar-link topbar-support">Support</button>
+
+          <button
+            className={`test-mode-toggle ${pollerTestMode ? "on" : ""}`}
+            onClick={togglePollerTestMode}
+            disabled={pollerTestModeBusy}
+            aria-label="Toggle poller test mode"
+          >
+            {pollerTestModeBusy
+              ? "Updating..."
+              : pollerTestMode
+                ? "Test mode: ON"
+                : "Test mode: OFF"}
+          </button>
 
           <button
             className="theme-toggle"
