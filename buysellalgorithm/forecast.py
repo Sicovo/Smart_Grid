@@ -26,10 +26,10 @@ BASE_PRICE           = 10.0        # ¢/J
 PRICE_SOLAR_DEP      = 1.0
 PRICE_MIN            = 10.0        # both buy/sell clamped at this floor (pre-BUY_RATIO)
 BUY_RATIO            = 0.5         # buy_price = 0.5 × sell_price (grid-perspective)
-PV_PEAK_W            = 8.0
+PV_PEAK_W            = 4.0   # normal-day lab panel rating
 
-# Conservative bus-side PV η (matches naive.PV_EFFICIENCY).
-PV_EFFICIENCY        = 0.90
+# Conservative bus-side PV η — single source of truth in naive.py.
+from .naive import PV_EFFICIENCY  # noqa: E402
 
 
 def expected_sun(tick: int) -> float:

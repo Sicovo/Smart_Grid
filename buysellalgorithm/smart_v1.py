@@ -76,11 +76,16 @@ def decide(state: GridState) -> Commands:
     cmd.led.p_grn = led_each
 
     # --- Step 5: forecast-aware cap dispatch (replaces naive's reactive rule) ---
+    # Pass through actual prices if the harness/poller populated them on
+    # state — cap_policy will use them instead of forecast for the current
+    # tick's economics (future ticks are still forecast-only).
     action = cap_policy.decide(
         current_tick=state.tick,
         current_net_W=net,
         v_cap=state.v_cap,
         vbus=vbus,
+        actual_sell_price=getattr(state, "actual_sell_price", None),
+        actual_buy_price =getattr(state, "actual_buy_price",  None),
     )
     target_W = action.target_W   # bus-side, signed
 
