@@ -128,50 +128,21 @@ def allocate_one(
 
 
 def allocate_all(
-    deferrables: List[Deferrable],
-    current_tick: int,
-    served_J_per_idx: Dict[int, float] = None,
+    deferrables: List[Deferrable], current_tick: int
 ) -> Tuple[float, List[Dict]]:
     """Run ``allocate_one`` on every active deferrable, in the order
     given. Returns (total_rate_W_this_tick, per-deferrable diagnostic dicts).
 
-    ``served_J_per_idx`` carries the per-day cumulative joules already
-    dispatched per deferable index (from served_tracker). We subtract
-    these from ``d.energy`` before scheduling — Azure publishes the
-    original obligation at every tick rather than the remaining, so
-    without this correction we'd massively over-serve (~5× across a
-    60-tick window).
-
-    Order matters: tightest deadline books first since it has the least
-    scheduling flexibility.
+    Order matters: earlier callers get first pick of cheap ticks. We sort
+    by deadline so the most time-pressured deferrable books first.
     """
-    served_J_per_idx = served_J_per_idx or {}
     booked: Dict[int, float] = {}
     total = 0.0
     detail = []
 
-    # Build "adjusted" deferrables whose energy field reflects the true
-    # remaining. allocate_one's only reads of ``d`` are index / window /
-    # energy, so we can substitute a fresh Deferrable freely.
-    active = []
-    served_lookup: Dict[int, float] = {}
-    original_lookup: Dict[int, float] = {}
-    for d in deferrables:
-        if not (d.tick_start <= current_tick <= d.tick_end):
-            continue
-        already   = max(0.0, served_J_per_idx.get(d.index, 0.0))
-        remaining = max(0.0, d.energy - already)
-        served_lookup[d.index]   = already
-        original_lookup[d.index] = d.energy
-        if remaining <= 1e-3:
-            continue
-        active.append(Deferrable(
-            index      = d.index,
-            tick_start = d.tick_start,
-            tick_end   = d.tick_end,
-            energy     = remaining,
-        ))
-    # Tightest deadline first.
+    active = [d for d in deferrables
+              if d.tick_start <= current_tick <= d.tick_end and d.energy > 0]
+    # Tightest deadline first — they have the least scheduling flexibility.
     active.sort(key=lambda d: d.tick_end)
 
     for d in active:
@@ -190,9 +161,7 @@ def allocate_all(
             "tick_end":          d.tick_end,
             "ticks_remaining":   d.tick_end - current_tick + 1,
             "seconds_remaining": (d.tick_end - current_tick + 1) * SECONDS_PER_TICK,
-            "remaining_energy":  d.energy,                       # already adjusted
-            "served_J":          served_lookup.get(d.index, 0.0),
-            "original_energy_J": original_lookup.get(d.index, d.energy),
+            "remaining_energy":  d.energy,
             "rate_W":            rate,
             "scheduled_cost":    scheduled_cost,
             "bookings_count":    len(bookings),
