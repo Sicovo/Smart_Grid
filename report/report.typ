@@ -780,39 +780,78 @@ Raw $P_("panel")$ jitter falls from about 300 mW peak-to-peak at the 1 kHz tick 
 #pagebreak()
 
 
-// ----- 8. User Interface (~1000 words) -----------------------
-= User Interface
+// ----- 8. Software System (~1000 words) -----------------------
+= Software System
 
-The user interface satisfies the brief's requirement for a display of current and historic energy flows and stores, and adds full operator control of every module. The stack is in-house, in three cooperating tiers.
+The software system provides the communication, control and monitoring infrastructure for the smart-grid platform. It links the Azure simulation server, backend services, embedded modules and operator dashboard into a unified system.
 
 == Architecture
 
-The lowest tier is a hand-rolled HTTP server in every module's firmware. It exposes a JSON command endpoint and runs on the Pico's second core, isolated from the 1 kHz control loop on the first core so network activity cannot stall or jitter the safety-critical control timing. The same core-1 thread also pushes the latest telemetry snapshot to the backend over HTTP once per second, so module-to-backend traffic is initiated by the module rather than polled.
+The lowest tier consists of the firmware running on each Pico-controlled module. Every module hosts a lightweight HTTP server on the Pico's second core, exposing a JSON command endpoint for remote control. Keeping the networking stack on core 1 isolates it from the 1 kHz control loop running on core 0, preventing network activity from introducing jitter into the timing-critical control and safety logic. The same networking thread also pushes a telemetry snapshot to the backend once per second.
 
-The middle tier is a Python FastAPI backend with a SQLite store. A standalone poller fetches the Azure `/demand` endpoint every second and the matching `/sun`, `/price` and `/deferables` endpoints whenever it sees a new (day, tick) pair, deduplicating snapshots so each Azure tick produces exactly one row. The backend also exposes `/modules/tlm/{role}` as the telemetry sink the firmware push targets, persisting each module's latest values into a time-stamped table. A command proxy `/modules/cmd/{role}` accepts JSON from the browser and forwards it to the addressed Pico over a raw socket, removing browser CORS preflight concerns from the firmware side. Read endpoints expose the latest grid state, recent grid and per-module snapshots, the active-algorithm metadata, and the run-scoped P&L meter (Section 9).
+The middle tier is a Python FastAPI backend backed by a SQLite database. It stores grid snapshots, telemetry records and algorithm outputs, and acts as the communication bridge between the frontend and the embedded modules. A standalone poller retrieves simulation data from the Azure server and records one deduplicated snapshot per simulation tick.
 
-The top tier is a React single-page application built with Vite. It polls the backend on a one-second interval, keeps a client-side rolling history per module, and renders three operator views routed under `/`, `/smps` and `/smpsmodule`.
+The top tier is a React single-page application built with Vite. The frontend provides monitoring, visualisation and operator controls through a browser interface.
 
 #figure(
-  image("images/ui_stack_architecture.png", width: 100%),
-  caption: [User interface stack: push telemetry up through FastAPI, commands proxied down through the same backend.],
-) <fig:ui-stack>
+image("images/sw_stack_architecture.png", width: 100%),
+caption: [Software stack showing telemetry flowing upward to FastAPI and control commands flowing downward through the same backend.],
+) <fig:sw-stack>
 
-@fig:ui-stack summarises the stack. Telemetry flows bottom-up: each Pico pushes once per second to `/modules/tlm/{role}`; the poller writes Azure grid state at the Azure tick. Commands flow top-down through the same backend: every browser command POSTs to `/modules/cmd/{role}`, and the backend opens the socket to the Pico. The frontend never talks to a Pico directly, so a backend outage suspends both telemetry recording and operator commands; the trade-off is described in Section 8.3.
+ The overall architecture is summarised in @fig:sw-stack. Telemetry is pushed from the Pico modules to the backend, while both operator commands and EMS-generated commands are routed through the backend before being forwarded to the corresponding module.
 
-== Operator Views
+== Backend and Control Layer
 
-The default My Energy view is a consumer-facing dashboard styled after a domestic energy provider. It shows the live grid state as demand and irradiance bar charts, a module status grid flagging each module as online, stale, tripped, on watchdog or disabled (the watchdog state is wired up in firmware telemetry but currently held inactive — Section 8.3), the current buy and sell prices, and the deferrable-load list as progress bars showing each job's window and time remaining. The SMPS Overview plots per-module telemetry histories (panel, bus, capacitor and load voltages, currents and powers) as line charts from the stored snapshots. The SMPS Modules view is the engineering surface: one card per module with live statistics, a mini history chart, a status pill, and a control panel matched to that module's role; the same page hosts the algorithm-selection tabs, the server-side auto-loop start/stop control, the daily P&L summary, and a CSV-zip export of the current run.
+The backend acts as the central coordination layer for the system. In addition to storing telemetry and simulation data, it hosts the Energy Management System (EMS), which evaluates the latest grid state together with module telemetry and generates control setpoints for the supercapacitor, load emulator and grid interfaces.
 
-The control panels expose the commands each module understands. The PV card switches between fixed, web-lookup and Perturb-and-Observe MPPT, sets a manual maximum-power voltage, and triggers the MPPT comparison test sequence. The grid and export cards set the bus target and current cap and toggle the module off via a zero target. The supercapacitor card offers a signed current slider with charge, discharge and stop shortcuts, and triggers the efficiency cycle test (Section 4.3) with operator-supplied charge current, discharge current and hold duration. The LED card sets per-channel power demands. Every card carries enable, disable and reset-trip controls.
+A standalone poller checks the Azure simulation endpoints once per second. When a new `(day, tick)` pair is detected, the corresponding irradiance, pricing and deferrable-load information is retrieved and stored as a single grid-state snapshot. This provides a persistent historical record that can be replayed and analysed independently of the external simulation server.
 
-== Control and Telemetry Paths
+Multiple algorithms can be registered and selected at runtime through the dashboard, enabling direct comparison between baseline and improved control strategies without requiring firmware changes. Algorithm decisions are logged alongside telemetry and grid-state snapshots, allowing the behaviour of different control policies to be reconstructed and evaluated offline.
 
-Both control and telemetry traverse the FastAPI middle tier. The browser POSTs commands to `/modules/cmd/{role}`; the backend forwards them to the Pico over a server-side socket, applying a 50 ms gap between sequential dispatches in the fixed order LED, supercapacitor, grid, export. Parallel four-way POSTs to the same WiFi access point were tried first and produced a 32% all-modules-ok rate under contention; serial dispatch with a gap eliminated the failures while still finishing every tick inside the 1 Hz auto-loop budget. Telemetry takes the inverse path, push instead of poll: each Pico assembles a JSON snapshot on its core-1 HTTP thread once per second and posts to `/modules/tlm/{role}`, which the backend persists.
+The backend also provides run-management facilities, including automatic EMS execution, CSV export of recorded data and a run-scoped profit-and-loss calculation based on imported and exported energy. Together, these features support both real-time operation and post-experiment analysis.
 
-A consequence of this design is that the backend is a single point of failure for both directions. The compensating safety argument lives in firmware: every module's inner control loop runs autonomously on its 1 kHz tick against its last commanded setpoint, so a backend outage leaves the bus regulating on the grid and export droop pair (Section 2.4) while the supercapacitor holds its last commanded current and the LED holds its last commanded per-channel powers. A per-module 10-second watchdog hook exists in the firmware scaffold but currently returns inactive, so the supercapacitor and LED do not auto-zero on a long outage. The operator-driven recovery is the dashboard Stop action (Section 9), which broadcasts safe-default commands — supercapacitor current to zero, LED channels to zero, grid and export to droop targets — through the same proxy.
+#figure(
+image("images/sw_stack_architecture.png", width: 100%),
+caption: [EMS CONTROL FLOW],
+) <fig:ems-control-flow>
 
-== On-Module Fallback Dashboard
+Azure Tick
+      ↓
+Grid State
+      ↓
+Load Latest Telemetry
+      ↓
+Selected Algorithm
+      ↓
+Generate Setpoints
+      ↓
+Command Dispatcher
+      ↓
+Pico Modules
+
+== Frontend Dashboard
+
+#figure(
+image("images/sw_stack_architecture.png", width: 100%),
+caption: [HOW TO PRESENT DASHBOARD?],
+) <fig:dashboard>
+
+Three operator views are provided. The default *My Energy* dashboard presents a high-level overview of the microgrid, including current demand, solar irradiance, energy prices, active deferrable loads and module health indicators. Historical demand and irradiance data are displayed as charts, while a status panel highlights whether each module is online, stale, tripped, disabled or in a watchdog state.
+
+The *SMPS Overview* page focuses on system-level monitoring. Historical telemetry from the PV, grid, export, supercapacitor and LED modules is visualised using time-series plots of voltages, currents and power flows. This view is intended for observing overall energy movement through the system and diagnosing interactions between subsystems.
+
+The *SMPS Modules* page provides detailed engineering controls. Each module is represented by a dedicated card showing live telemetry, recent history and module-specific controls. Operators can configure MPPT modes on the PV converter, adjust bus-voltage targets for grid and export modules, command supercapacitor charge or discharge currents, set LED load power levels and reset protection trips. The same interface also provides algorithm selection, automatic EMS execution controls, run-scoped profit-and-loss summaries and data export tools for post-run analysis.
+
+== Design Trade-offs
+
+Several implementation choices were revised during integration to improve timing reliability. The first version of the Azure poller attempted to fetch the full grid state at a fixed five-second interval. In practice, a complete cycle of `/demand`, `/sun`, `/price` and `/deferables` requests could take longer than the Azure update period, causing occasional missed ticks. The final design instead checks only `/demand` once per second and treats `(day, tick)` as the change detector. The remaining endpoints are fetched only when a new tick is observed, and are requested in parallel. This keeps tick-detection latency below one second while avoiding unnecessary repeated requests to the slower auxiliary endpoints.
+
+Telemetry collection was changed for a similar reason. Early versions used backend polling to retrieve telemetry from each module. In practice, modules may be temporarily offline during startup, reconfiguration or network interruptions, causing polling requests to block until timeout. Achieving higher telemetry update rates would therefore require either aggressive polling, increasing network traffic, or accepting delays caused by repeated timeout handling. The final implementation uses push-based telemetry: each module sends its latest snapshot to the backend once per second whenever it is online. This makes new measurements available immediately after acquisition, avoids backend resources being tied up waiting for unresponsive modules, and scales more efficiently as the number of modules increases. The trade-off is that telemetry collection now depends on each module maintaining its own network connection and upload loop.
+
+Control commands were kept backend-mediated rather than being sent directly from the frontend to the Pico modules. This allows the EMS algorithm to run headlessly on the backend and issue commands without requiring the dashboard to remain open. It also provides a single control interface for both automated EMS actions and manual operator commands. Centralising command dispatch in the backend ensures that all control actions are logged alongside telemetry and grid-state data, enabling consistent run replay, debugging and post-experiment analysis. In addition, module addressing and communication logic are implemented in one location rather than being duplicated across multiple frontend views or external clients.
+
+
+== On-Module Fallback Dashboard [R WE MENTIONING THIS AS /TLM IS REMOVED]
 
 As a final redundancy, a single-file dashboard is bundled into the firmware filesystem and served by the module's own HTTP server at its root path. This gives a usable monitoring and control surface with no backend, database or Node toolchain, useful during bench bring-up and as a fallback if the main stack is unavailable on demo day.
 
@@ -921,6 +960,13 @@ Supercapacitor SMPS (Section 4.3): fully automated cycle test from the host dash
 Import SMPS (Section 5.3.2): manual measurement using the bench PSU's built-in current readout for the pre-loss $P_("PSU,drawn")$ side; the post-loss $P_("bus,delivered")$ comes from firmware. Bus voltage is swept across nine points from 7V to 11V in 0.5V steps; current is set at 0.1, 0.2 and 0.3A by the outer voltage PI. The 27-point grid gives $eta_("import")$ rising monotonically from 77.8% (low current, low bus) to 93.6% (high current, high bus), with 83.8%, 89.9% and 92.5% at the nominal $V_("bus") = 10$V at 0.1, 0.2 and 0.3A.
 
 Export SMPS (Section 5.3.1): mirrors the import procedure but with the DMM in series on the bus-to-export wire (the firmware shunt sits on the resistor side), so $P_("dissipated")$ is from firmware and $P_("bus,drawn") = V_("bus") dot I_("DMM")$. The sweep grid and headline numbers are in Section 5.3.1. Under the dual-meter framework (Section 2.3) this efficiency governs the dashboard-vs-meter gap rather than entering the cost formula directly: the bus meter credits the bus-side export at $p_("buy")$, while the dashboard's post-loss telemetry under-reports that revenue by the conversion loss.
+
+=== Communication & Integration Tests
+
+Azure Tick Acquisition
+Telemetry Collection
+End-to-End Command Path [Azure Update->CMD Sent->Execution]
+Module Disconnect & Recovery?
 
 == Performance Metrics
 

@@ -52,12 +52,8 @@ def decide(state: GridState) -> Commands:
     pv_bus = max(0.0, state.pv_p) * PV_EFFICIENCY
 
     # --- Step 2: forecast-aware deferrable rate (replaces naive's linear smear) ---
-    # ``state.deferrables_served_J`` is the per-day cumulative joules
-    # already dispatched per deferable index — subtracted from each
-    # d.energy so we don't over-serve (Azure publishes the original
-    # obligation at every tick, never the remaining).
     def_rate_total, def_detail = scheduler.allocate_all(
-        state.deferrables, state.tick, state.deferrables_served_J
+        state.deferrables, state.tick
     )
 
     # --- Step 3: effective load + net (same shape as naive) ---

@@ -1,18 +1,9 @@
 import os
 import time
-import json
 import requests
 from pprint import pprint
-from pathlib import Path
-from db import GridSnapshot, SessionLocal, init_db, save_snapshot, save_module_snapshot
+from db import init_db, save_snapshot, save_module_snapshot
 from concurrent.futures import ThreadPoolExecutor
-from test_profile import (
-    TEST_DEMAND_CYCLE,
-    TEST_DEMAND_PERIOD_TICKS,
-    TEST_TICK_SECONDS,
-    TEST_SUN_CYCLE,
-    get_test_deferrables,
-)
 
 AZURE_BASE_URL = "https://icelec50015.azurewebsites.net"
 AZURE_REQUEST_TIMEOUT = float(os.getenv("AZURE_REQUEST_TIMEOUT", "5"))
@@ -20,8 +11,6 @@ AZURE_REQUEST_TIMEOUT = float(os.getenv("AZURE_REQUEST_TIMEOUT", "5"))
 # aliasing against the 5 s Azure tick. At 2 s, decisions arrive at irregular
 # 4 s / 6 s spacing depending on phase. At 1 s, they land at consistent ~5 s.
 MODULE_POLL_INTERVAL = float(os.getenv("MODULE_POLL_INTERVAL", "1"))
-MODE_CHECK_INTERVAL = float(os.getenv("MODE_CHECK_INTERVAL", "0.2"))
-TEST_MODE_STATE_FILE = Path(__file__).with_name("poller_test_mode.json")
 
 # All module telemetry is now push-based. No polling of /tlm endpoints.
 
@@ -61,70 +50,6 @@ def build_grid_state_from_demand(demand):
     }
 
 
-def _read_test_mode_enabled():
-    try:
-        payload = json.loads(TEST_MODE_STATE_FILE.read_text(encoding="utf-8"))
-        return bool(payload.get("enabled", False))
-    except Exception:
-        return False
-
-
-def _latest_day_in_db(default=-1):
-    db = SessionLocal()
-    try:
-        row = db.query(GridSnapshot.day).order_by(GridSnapshot.id.desc()).first()
-        if row is None or row[0] is None:
-            return default
-        return int(row[0])
-    except Exception:
-        return default
-    finally:
-        db.close()
-
-
-def _day_tick_exists(day, tick):
-    db = SessionLocal()
-    try:
-        row = (
-            db.query(GridSnapshot.id)
-            .filter(GridSnapshot.day == int(day), GridSnapshot.tick == int(tick))
-            .first()
-        )
-        return row is not None
-    except Exception:
-        return False
-    finally:
-        db.close()
-
-
-def _build_test_grid_state(cycle_index, day_base, day_deferrables_cache):
-    index = cycle_index % TEST_DEMAND_PERIOD_TICKS
-    sample = TEST_DEMAND_CYCLE[index]
-    day = day_base + (cycle_index // TEST_DEMAND_PERIOD_TICKS)
-    if day not in day_deferrables_cache:
-        day_deferrables_cache[day] = get_test_deferrables(day)
-    return {
-        "day": day,
-        "tick": sample["tick"],
-        "sun": float(TEST_SUN_CYCLE[index]),
-        "buy_price": sample["buy_price"],
-        "sell_price": sample["sell_price"],
-        "instant_demand": sample["demand"],
-        "deferables": day_deferrables_cache[day],
-    }
-
-
-def _sleep_interruptible(duration_s, mode_expected):
-    """Sleep in short chunks so mode flips are picked up quickly."""
-    remaining = max(0.0, float(duration_s))
-    while remaining > 0:
-        if _read_test_mode_enabled() != mode_expected:
-            return
-        step = min(remaining, MODE_CHECK_INTERVAL)
-        time.sleep(step)
-        remaining -= step
-
-
 # Module telemetry is now pushed by each board; no /tlm polling code remains.
 
 if __name__ == "__main__":
@@ -134,62 +59,26 @@ if __name__ == "__main__":
 
     last_day = None
     last_tick = None
-    test_cycle_pos = 0
-    test_mode_prev = None
-    test_day_base = 0
-    test_day_deferrables_cache = {}
 
     while True:
         try:
-            test_mode_enabled = _read_test_mode_enabled()
+            demand = get_json(AZURE_BASE_URL + "/demand", AZURE_REQUEST_TIMEOUT)
 
-            if test_mode_enabled != test_mode_prev:
-                mode = "TEST(60-tick replay)" if test_mode_enabled else "LIVE(Azure)"
-                print(f"[poller] source mode -> {mode}")
-                if test_mode_enabled:
-                    test_cycle_pos = 0
-                    test_day_base = _latest_day_in_db(default=-1) + 1
-                    test_day_deferrables_cache = {}
-                    # Guarantee a fresh replay day so the first saved row is tick 0.
-                    while _day_tick_exists(test_day_base, 0):
-                        test_day_base += 1
-                test_mode_prev = test_mode_enabled
+            day = demand["day"]
+            tick = demand["tick"]
 
-            if test_mode_enabled:
-                grid_state = _build_test_grid_state(
-                    test_cycle_pos,
-                    test_day_base,
-                    test_day_deferrables_cache,
-                )
-                test_cycle_pos += 1
-            else:
-                demand = get_json(AZURE_BASE_URL + "/demand", AZURE_REQUEST_TIMEOUT)
-                # If mode flipped during the request, skip live enrichment and
-                # start the next loop iteration in test mode immediately.
-                if _read_test_mode_enabled():
-                    continue
-                day = demand["day"]
-                tick = demand["tick"]
-                if (day, tick) == (last_day, last_tick):
-                    _sleep_interruptible(MODULE_POLL_INTERVAL, test_mode_enabled)
-                    continue
-
-                # Avoid spending up to AZURE_REQUEST_TIMEOUT on aux endpoints if
-                # the operator has already switched to test mode.
-                if _read_test_mode_enabled():
-                    continue
+            if (day, tick) != (last_day, last_tick):
                 grid_state = build_grid_state_from_demand(demand)
+                saved = save_snapshot(grid_state)
 
-            saved = save_snapshot(grid_state)
-            if saved:
-                print("\n=== SAVED GRID STATE ===")
-                pprint(grid_state)
+                if saved:
+                    print("\n=== SAVED GRID STATE ===")
+                    pprint(grid_state)
 
-            last_day, last_tick = grid_state["day"], grid_state["tick"]
+                last_day, last_tick = day, tick
 
         except Exception as e:
             print("GRID ERROR:", e)
 
         # Module telemetry is delivered by board push; no polling here.
-        sleep_s = TEST_TICK_SECONDS if test_mode_enabled else MODULE_POLL_INTERVAL
-        _sleep_interruptible(sleep_s, test_mode_enabled)
+        time.sleep(MODULE_POLL_INTERVAL)

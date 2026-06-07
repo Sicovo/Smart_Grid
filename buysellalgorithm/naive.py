@@ -67,8 +67,6 @@ import json
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
-from . import served_tracker
-
 
 # ---------------- Operating limits ----------------
 
@@ -148,16 +146,6 @@ class GridState:
     v_cap:       float                          # supercap terminal voltage (V)
     energy_cap:  float                          # cap energy (J)
     deferrables: List[Deferrable] = field(default_factory=list)
-
-    # Azure day id — used to bucket served-J tracking per day.
-    day: int = 0
-
-    # Cumulative joules already dispatched against each deferrable this
-    # Azure day, keyed by deferable index. Populated by state_from_db_rows
-    # from served_tracker. The algorithm uses these to subtract from
-    # d.energy (which Azure publishes as the ORIGINAL obligation, never
-    # the remaining) before computing per-tick rates.
-    deferrables_served_J: Dict[int, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -264,48 +252,37 @@ def _discharge_i_max(v_cap):
     return I_CAP_MAX * scale
 
 
-def _active_deferrable_rates(deferrables, tick, served_J_per_idx=None):
+def _active_deferrable_rates(deferrables, tick):
     """Return (total_rate_W, [per-deferrable diagnostic dicts]) for the
     deferrables whose window covers ``tick``.
 
     Units (per Azure convention — see SECONDS_PER_TICK):
-        d.energy            joules (J) — ORIGINAL obligation (constant)
-        served_J_per_idx    joules already dispatched this Azure day
-        remaining           = d.energy − served (the true remaining)
+        d.energy            joules (J)
         ticks_remaining     Azure ticks
         seconds_remaining   real seconds (ticks × 5)
-        rate_W              = remaining / seconds_remaining  →  watts
+        rate_W              = energy_J / seconds_remaining  →  watts
 
-    Spreads the *true remaining* linearly across the remaining real-time.
-    Empirically (see served_tracker.py docstring) Azure publishes the
-    full original obligation at every tick — it does NOT decrease as we
-    serve. The ``served_J_per_idx`` dict carries our own cumulative
-    dispatch so we don't over-serve."""
-    served_J_per_idx = served_J_per_idx or {}
+    Spreading energy linearly across the remaining real-time guarantees
+    the deferrable completes on the deadline tick, with adaptive catch-up
+    if previous ticks under-served (because the live d.energy from Azure
+    already reflects what's still owed)."""
     total = 0.0
     detail = []
     for d in deferrables:
-        if not (d.tick_start <= tick <= d.tick_end):
-            continue
-        already   = max(0.0, served_J_per_idx.get(d.index, 0.0))
-        remaining = max(0.0, d.energy - already)
-        if remaining <= 1e-3:
-            continue
-        ticks_remaining   = max(1, d.tick_end - tick + 1)
-        seconds_remaining = ticks_remaining * SECONDS_PER_TICK
-        rate = remaining / seconds_remaining
-        total += rate
-        detail.append({
-            "index":              d.index,
-            "tick_start":         d.tick_start,
-            "tick_end":           d.tick_end,
-            "ticks_remaining":    ticks_remaining,
-            "seconds_remaining":  seconds_remaining,
-            "remaining_energy":   remaining,
-            "served_J":           already,
-            "original_energy_J":  d.energy,
-            "rate_W":             rate,
-        })
+        if d.tick_start <= tick <= d.tick_end and d.energy > 0:
+            ticks_remaining   = max(1, d.tick_end - tick + 1)
+            seconds_remaining = ticks_remaining * SECONDS_PER_TICK
+            rate = d.energy / seconds_remaining
+            total += rate
+            detail.append({
+                "index":              d.index,
+                "tick_start":         d.tick_start,
+                "tick_end":           d.tick_end,
+                "ticks_remaining":    ticks_remaining,
+                "seconds_remaining":  seconds_remaining,
+                "remaining_energy":   d.energy,
+                "rate_W":             rate,
+            })
     return total, detail
 
 
@@ -319,11 +296,8 @@ def decide(state: GridState) -> Commands:
     pv_bus = max(0.0, state.pv_p) * PV_EFFICIENCY
 
     # Step 2 — active deferrables become smooth load on the bus.
-    # ``state.deferrables_served_J`` is the per-day cumulative joules
-    # we've already dispatched (from served_tracker) — subtracted from
-    # the Azure-published obligation so we don't over-serve.
     def_rate_total, def_detail = _active_deferrable_rates(
-        state.deferrables, state.tick, state.deferrables_served_J
+        state.deferrables, state.tick
     )
 
     # Step 3 — effective load and net imbalance.
@@ -465,13 +439,6 @@ def state_from_db_rows(grid_row, pv_row, cap_row) -> Optional[GridState]:
     if vbus <= 0:
         vbus = _f(getattr(pv_row, 'vb_bus', None))
 
-    # Per-day served-J tracking: roll over the tracker when Azure flips
-    # to a new day, then snapshot whatever we've credited so far for
-    # this day. Algorithm subtracts these from each d.energy.
-    day = _i(getattr(grid_row, 'day', 0))
-    served_tracker.reset_day_if_changed(day)
-    served_J = served_tracker.served_for_day(day)
-
     return GridState(
         tick        = _i(getattr(grid_row, 'tick', 0)),
         pv_p        = max(0.0, _f(getattr(pv_row,  'p_panel',        None))),
@@ -480,35 +447,7 @@ def state_from_db_rows(grid_row, pv_row, cap_row) -> Optional[GridState]:
         v_cap       = _f(getattr(cap_row, 'v_cap',    None)),
         energy_cap  = max(0.0, _f(getattr(cap_row, 'energy_J', None))),
         deferrables = deferrables,
-        day                  = day,
-        deferrables_served_J = served_J,
     )
-
-
-def record_served_from_commands(state: GridState, cmd) -> None:
-    """Credit each active deferable with the joules dispatched this tick.
-
-    Call AFTER a successful module dispatch — never from the read-only
-    /algo/naive GET path, otherwise we'd credit ticks the algorithm only
-    advised on.
-
-    Each entry in ``cmd.active_deferrables`` carries the per-deferable
-    ``rate_W`` the algorithm asked the LED to dissipate. Multiplied by
-    SECONDS_PER_TICK (= 5 s real time) it's the joules served this tick.
-    Backed by served_tracker so the next state_from_db_rows pass picks
-    up the new totals."""
-    if not getattr(cmd, "active_deferrables", None):
-        return
-    for entry in cmd.active_deferrables:
-        idx = entry.get("index")
-        rate = entry.get("rate_W")
-        if idx is None or not isinstance(rate, (int, float)):
-            continue
-        served_tracker.note_dispatch(
-            day       = state.day,
-            def_index = int(idx),
-            joules    = float(rate) * SECONDS_PER_TICK,
-        )
 
 
 def commands_to_payloads(cmd: Commands) -> Dict[str, Dict]:

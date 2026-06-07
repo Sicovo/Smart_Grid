@@ -1200,31 +1200,6 @@ textarea {
   cursor: pointer;
 }
 
-.test-mode-toggle {
-  border: 1px solid #3a2a6d;
-  background: #2a1048;
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 700;
-  border-radius: 999px;
-  padding: 7px 12px;
-  cursor: pointer;
-}
-
-.test-mode-toggle.on {
-  border-color: #177f43;
-  background: #0f4f2f;
-}
-
-.test-mode-toggle:hover {
-  opacity: 0.9;
-}
-
-.test-mode-toggle:disabled {
-  opacity: 0.7;
-  cursor: default;
-}
-
 .theme-toggle:hover {
   background: #2a136a;
 }
@@ -1490,18 +1465,6 @@ body[data-theme="light"] .theme-toggle {
   border-color: #c8d4e8;
   background: #f7faff;
   color: #1a2a44;
-}
-
-body[data-theme="light"] .test-mode-toggle {
-  border-color: #c8d4e8;
-  background: #f7faff;
-  color: #1a2a44;
-}
-
-body[data-theme="light"] .test-mode-toggle.on {
-  border-color: #6fbf8a;
-  background: #e8f6ec;
-  color: #1e5a35;
 }
 
 body[data-theme="light"] .theme-toggle:hover {
