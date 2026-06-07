@@ -1200,33 +1200,56 @@ textarea {
   cursor: pointer;
 }
 
-.test-mode-toggle {
+.theme-toggle:hover {
+  background: #2a136a;
+}
+
+.poller-source-toggle {
+  min-width: 132px;
+  height: 34px;
   border: 1px solid #3a2a6d;
-  background: #2a1048;
+  background: #1f0b53;
   color: #ffffff;
-  font-size: 13px;
+  border-radius: 8px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 700;
-  border-radius: 999px;
-  padding: 7px 12px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.test-mode-toggle.on {
-  border-color: #177f43;
-  background: #0f4f2f;
-}
-
-.test-mode-toggle:hover {
-  opacity: 0.9;
-}
-
-.test-mode-toggle:disabled {
-  opacity: 0.7;
-  cursor: default;
-}
-
-.theme-toggle:hover {
+.poller-source-toggle:hover:not(:disabled) {
   background: #2a136a;
+}
+
+.poller-source-toggle:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.poller-source-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #54d98c;
+}
+
+.poller-source-fixed {
+  border-color: #f7b955;
+  background: #4a2d08;
+}
+
+.poller-source-fixed .poller-source-dot {
+  background: #f7b955;
+}
+
+.poller-source-fixed:hover:not(:disabled) {
+  background: #5b390c;
 }
 
 .topbar-spacer {
@@ -1492,20 +1515,46 @@ body[data-theme="light"] .theme-toggle {
   color: #1a2a44;
 }
 
-body[data-theme="light"] .test-mode-toggle {
+body[data-theme="light"] .theme-toggle:hover {
+  background: #e9f1ff;
+}
+
+body[data-theme="light"] .poller-source-toggle {
   border-color: #c8d4e8;
   background: #f7faff;
   color: #1a2a44;
 }
 
-body[data-theme="light"] .test-mode-toggle.on {
-  border-color: #6fbf8a;
-  background: #e8f6ec;
-  color: #1e5a35;
+body[data-theme="light"] .poller-source-toggle:hover:not(:disabled) {
+  background: #e9f1ff;
 }
 
-body[data-theme="light"] .theme-toggle:hover {
-  background: #e9f1ff;
+body[data-theme="light"] .poller-source-fixed {
+  border-color: #b97816;
+  background: #fff4dc;
+  color: #593600;
+}
+
+@media (max-width: 1100px) {
+  .topbar-nav,
+  .topbar-support {
+    display: none;
+  }
+}
+
+@media (max-width: 680px) {
+  .topbar-inner {
+    gap: 10px;
+    padding: 0 12px;
+  }
+
+  .topbar-user {
+    display: none;
+  }
+
+  .poller-source-toggle {
+    min-width: 124px;
+  }
 }
 
 body[data-theme="light"] .smps-standalone-page {

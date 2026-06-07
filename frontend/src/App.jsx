@@ -41,47 +41,19 @@ function DashboardLayout({ theme, onToggleTheme }) {
   const [latest, setLatest] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [modules, setModules] = useState({});
-  const [pollerTestMode, setPollerTestMode] = useState(false);
-  const [pollerTestModeBusy, setPollerTestModeBusy] = useState(false);
-
-  async function fetchPollerTestMode() {
-    try {
-      const res = await fetch(`${API_BASE}/poller/test-mode`, { cache: "no-store" });
-      if (!res.ok) return;
-      const data = await res.json();
-      setPollerTestMode(Boolean(data?.enabled));
-    } catch (err) {
-      console.error("Failed to fetch poller test mode", err);
-    }
-  }
-
-  async function togglePollerTestMode() {
-    const next = !pollerTestMode;
-    setPollerTestModeBusy(true);
-    try {
-      const res = await fetch(`${API_BASE}/poller/test-mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      if (!res.ok) {
-        throw new Error(`toggle failed: ${res.status}`);
-      }
-      const data = await res.json();
-      setPollerTestMode(Boolean(data?.enabled));
-    } catch (err) {
-      console.error("Failed to toggle poller test mode", err);
-    } finally {
-      setPollerTestModeBusy(false);
-    }
-  }
+  const [pollerSource, setPollerSource] = useState({
+    mode: "azure",
+    status: {},
+  });
+  const [sourceSwitching, setSourceSwitching] = useState(false);
 
   async function fetchData() {
     try {
-      const [latestRes, snapshotsRes, modulesRes] = await Promise.all([
+      const [latestRes, snapshotsRes, modulesRes, sourceRes] = await Promise.all([
         fetch(`${API_BASE}/latest`),
         fetch(`${API_BASE}/snapshots?limit=50`),
         fetch(`${API_BASE}/modules/latest`),
+        fetch(`${API_BASE}/poller/source`),
       ]);
 
       if (!latestRes.ok || !snapshotsRes.ok) {
@@ -94,10 +66,12 @@ function DashboardLayout({ theme, onToggleTheme }) {
       ]);
 
       const modulesData = modulesRes.ok ? await modulesRes.json() : {};
+      const sourceData = sourceRes.ok ? await sourceRes.json() : null;
 
       setLatest(latestData?.error ? null : latestData);
       setSnapshots(Array.isArray(snapshotsData) ? snapshotsData : []);
       setModules(modulesData || {});
+      if (sourceData) setPollerSource(sourceData);
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
       setLatest(null);
@@ -106,15 +80,29 @@ function DashboardLayout({ theme, onToggleTheme }) {
     }
   }
 
+  async function togglePollerSource() {
+    const mode = pollerSource.mode === "fixed" ? "azure" : "fixed";
+    setSourceSwitching(true);
+    try {
+      const response = await fetch(`${API_BASE}/poller/source`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!response.ok) throw new Error("Failed to switch poller source");
+      setPollerSource(await response.json());
+      await fetchData();
+    } catch (err) {
+      console.error("Failed to switch poller source", err);
+    } finally {
+      setSourceSwitching(false);
+    }
+  }
+
   useEffect(() => {
     fetchData();
-    fetchPollerTestMode();
     const interval = setInterval(fetchData, 1000);
-    const testModeInterval = setInterval(fetchPollerTestMode, 3000);
-    return () => {
-      clearInterval(interval);
-      clearInterval(testModeInterval);
-    };
+    return () => clearInterval(interval);
   }, []);
 
   return (
@@ -138,19 +126,25 @@ function DashboardLayout({ theme, onToggleTheme }) {
 
           <div className="topbar-spacer" />
 
-          <button className="topbar-link topbar-support">Support</button>
 
           <button
-            className={`test-mode-toggle ${pollerTestMode ? "on" : ""}`}
-            onClick={togglePollerTestMode}
-            disabled={pollerTestModeBusy}
-            aria-label="Toggle poller test mode"
+            className={`poller-source-toggle poller-source-${pollerSource.mode}`}
+            onClick={togglePollerSource}
+            disabled={sourceSwitching}
+            title={
+              pollerSource.mode === "fixed"
+                ? "Stop the fixed dataset and resume Azure polling"
+                : "Stop Azure polling and play the fixed 60-tick dataset"
+            }
           >
-            {pollerTestModeBusy
-              ? "Updating..."
-              : pollerTestMode
-                ? "Test mode: ON"
-                : "Test mode: OFF"}
+            <span className="poller-source-dot" aria-hidden="true" />
+            {sourceSwitching
+              ? "Switching..."
+              : pollerSource.mode === "fixed"
+                ? pollerSource.status?.completed
+                  ? "Fixed complete"
+                  : `Fixed ${pollerSource.status?.tick ?? 0}/59`
+                : "Use fixed data"}
           </button>
 
           <button

@@ -1,27 +1,28 @@
+import json
 import os
 import time
-import json
 import requests
 from pprint import pprint
 from pathlib import Path
-from db import GridSnapshot, SessionLocal, init_db, save_snapshot, save_module_snapshot
-from concurrent.futures import ThreadPoolExecutor
-from test_profile import (
-    TEST_DEMAND_CYCLE,
-    TEST_DEMAND_PERIOD_TICKS,
-    TEST_TICK_SECONDS,
-    TEST_SUN_CYCLE,
-    get_test_deferrables,
+from db import (
+    get_latest_grid_tick,
+    init_db,
+    save_module_snapshot,
+    save_snapshot,
 )
+from concurrent.futures import ThreadPoolExecutor
 
 AZURE_BASE_URL = "https://icelec50015.azurewebsites.net"
 AZURE_REQUEST_TIMEOUT = float(os.getenv("AZURE_REQUEST_TIMEOUT", "5"))
+FIXED_TICK_INTERVAL = float(os.getenv("FIXED_TICK_INTERVAL", "5"))
 # Poll interval: 1 s so tick detection latency is bounded by 1 s instead of
 # aliasing against the 5 s Azure tick. At 2 s, decisions arrive at irregular
 # 4 s / 6 s spacing depending on phase. At 1 s, they land at consistent ~5 s.
 MODULE_POLL_INTERVAL = float(os.getenv("MODULE_POLL_INTERVAL", "1"))
-MODE_CHECK_INTERVAL = float(os.getenv("MODE_CHECK_INTERVAL", "0.2"))
-TEST_MODE_STATE_FILE = Path(__file__).with_name("poller_test_mode.json")
+BACKEND_DIR = Path(__file__).resolve().parent
+FIXED_DATA_PATH = BACKEND_DIR / "fixed_grid_data.json"
+CONTROL_PATH = BACKEND_DIR / "poller_control.json"
+STATUS_PATH = BACKEND_DIR / "poller_status.json"
 
 # All module telemetry is now push-based. No polling of /tlm endpoints.
 
@@ -61,68 +62,45 @@ def build_grid_state_from_demand(demand):
     }
 
 
-def _read_test_mode_enabled():
-    try:
-        payload = json.loads(TEST_MODE_STATE_FILE.read_text(encoding="utf-8"))
-        return bool(payload.get("enabled", False))
-    except Exception:
-        return False
+def load_fixed_data():
+    with FIXED_DATA_PATH.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data.get("ticks"), list) or not data["ticks"]:
+        raise ValueError("fixed_grid_data.json must contain a non-empty ticks list")
+    if len(data.get("sun_by_tick", [])) != len(data["ticks"]):
+        raise ValueError("sun_by_tick must contain one value for every fixed tick")
+    return data
 
 
-def _latest_day_in_db(default=-1):
-    db = SessionLocal()
-    try:
-        row = db.query(GridSnapshot.day).order_by(GridSnapshot.id.desc()).first()
-        if row is None or row[0] is None:
-            return default
-        return int(row[0])
-    except Exception:
-        return default
-    finally:
-        db.close()
-
-
-def _day_tick_exists(day, tick):
-    db = SessionLocal()
-    try:
-        row = (
-            db.query(GridSnapshot.id)
-            .filter(GridSnapshot.day == int(day), GridSnapshot.tick == int(tick))
-            .first()
-        )
-        return row is not None
-    except Exception:
-        return False
-    finally:
-        db.close()
-
-
-def _build_test_grid_state(cycle_index, day_base, day_deferrables_cache):
-    index = cycle_index % TEST_DEMAND_PERIOD_TICKS
-    sample = TEST_DEMAND_CYCLE[index]
-    day = day_base + (cycle_index // TEST_DEMAND_PERIOD_TICKS)
-    if day not in day_deferrables_cache:
-        day_deferrables_cache[day] = get_test_deferrables(day)
+def build_grid_state_from_fixed(fixed_data, index, run_day):
+    item = fixed_data["ticks"][index]
     return {
-        "day": day,
-        "tick": sample["tick"],
-        "sun": float(TEST_SUN_CYCLE[index]),
-        "buy_price": sample["buy_price"],
-        "sell_price": sample["sell_price"],
-        "instant_demand": sample["demand"],
-        "deferables": day_deferrables_cache[day],
+        "day": run_day,
+        "tick": item["tick"],
+        "sun": fixed_data["sun_by_tick"][index],
+        "buy_price": item["buy_price"],
+        "sell_price": item["sell_price"],
+        "instant_demand": item["demand"],
+        "deferables": fixed_data.get("deferables", []),
     }
 
 
-def _sleep_interruptible(duration_s, mode_expected):
-    """Sleep in short chunks so mode flips are picked up quickly."""
-    remaining = max(0.0, float(duration_s))
-    while remaining > 0:
-        if _read_test_mode_enabled() != mode_expected:
-            return
-        step = min(remaining, MODE_CHECK_INTERVAL)
-        time.sleep(step)
-        remaining -= step
+def read_control():
+    try:
+        with CONTROL_PATH.open("r", encoding="utf-8") as handle:
+            control = json.load(handle)
+        if control.get("mode") in {"azure", "fixed"}:
+            return control
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return {"mode": "azure", "generation": "default", "run_day": None}
+
+
+def write_status(payload):
+    temp_path = STATUS_PATH.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    temp_path.replace(STATUS_PATH)
 
 
 # Module telemetry is now pushed by each board; no /tlm polling code remains.
@@ -131,65 +109,98 @@ if __name__ == "__main__":
     init_db()
     print("Grid source:", AZURE_BASE_URL)
     print("Module telemetry push mode enabled; /tlm polling disabled")
+    fixed_data = load_fixed_data()
 
     last_day = None
     last_tick = None
-    test_cycle_pos = 0
-    test_mode_prev = None
-    test_day_base = 0
-    test_day_deferrables_cache = {}
+    active_generation = None
+    fixed_index = 0
+    next_fixed_at = 0.0
 
     while True:
         try:
-            test_mode_enabled = _read_test_mode_enabled()
+            control = read_control()
+            mode = control["mode"]
+            generation = str(control.get("generation", "default"))
 
-            if test_mode_enabled != test_mode_prev:
-                mode = "TEST(60-tick replay)" if test_mode_enabled else "LIVE(Azure)"
-                print(f"[poller] source mode -> {mode}")
-                if test_mode_enabled:
-                    test_cycle_pos = 0
-                    test_day_base = _latest_day_in_db(default=-1) + 1
-                    test_day_deferrables_cache = {}
-                    # Guarantee a fresh replay day so the first saved row is tick 0.
-                    while _day_tick_exists(test_day_base, 0):
-                        test_day_base += 1
-                test_mode_prev = test_mode_enabled
+            if generation != active_generation:
+                active_generation = generation
+                next_fixed_at = 0.0
+                last_day = None
+                last_tick = None
+                if mode == "fixed":
+                    run_day = int(control["run_day"])
+                    latest_fixed_tick = get_latest_grid_tick(run_day)
+                    fixed_index = (
+                        0 if latest_fixed_tick is None else latest_fixed_tick + 1
+                    )
+                    write_status({
+                        "mode": "fixed",
+                        "generation": generation,
+                        "run_day": run_day,
+                        "tick": latest_fixed_tick,
+                        "index": fixed_index,
+                        "total": len(fixed_data["ticks"]),
+                        "completed": fixed_index >= len(fixed_data["ticks"]),
+                        "updated_at": time.time(),
+                    })
+                else:
+                    fixed_index = 0
+                print(f"Poller mode changed to {mode}")
 
-            if test_mode_enabled:
-                grid_state = _build_test_grid_state(
-                    test_cycle_pos,
-                    test_day_base,
-                    test_day_deferrables_cache,
-                )
-                test_cycle_pos += 1
+            if mode == "fixed":
+                run_day = int(control["run_day"])
+                now = time.monotonic()
+                total = len(fixed_data["ticks"])
+
+                if fixed_index < total and now >= next_fixed_at:
+                    grid_state = build_grid_state_from_fixed(
+                        fixed_data, fixed_index, run_day
+                    )
+                    saved = save_snapshot(grid_state)
+                    if saved:
+                        print("\n=== SAVED FIXED GRID STATE ===")
+                        pprint(grid_state)
+
+                    fixed_index += 1
+                    next_fixed_at = now + FIXED_TICK_INTERVAL
+                    write_status({
+                        "mode": "fixed",
+                        "generation": generation,
+                        "run_day": run_day,
+                        "tick": grid_state["tick"],
+                        "index": fixed_index,
+                        "total": total,
+                        "completed": fixed_index >= total,
+                        "updated_at": time.time(),
+                    })
             else:
-                demand = get_json(AZURE_BASE_URL + "/demand", AZURE_REQUEST_TIMEOUT)
-                # If mode flipped during the request, skip live enrichment and
-                # start the next loop iteration in test mode immediately.
-                if _read_test_mode_enabled():
-                    continue
+                demand = get_json(
+                    AZURE_BASE_URL + "/demand", AZURE_REQUEST_TIMEOUT
+                )
                 day = demand["day"]
                 tick = demand["tick"]
-                if (day, tick) == (last_day, last_tick):
-                    _sleep_interruptible(MODULE_POLL_INTERVAL, test_mode_enabled)
-                    continue
 
-                # Avoid spending up to AZURE_REQUEST_TIMEOUT on aux endpoints if
-                # the operator has already switched to test mode.
-                if _read_test_mode_enabled():
-                    continue
-                grid_state = build_grid_state_from_demand(demand)
+                if (day, tick) != (last_day, last_tick):
+                    grid_state = build_grid_state_from_demand(demand)
+                    saved = save_snapshot(grid_state)
 
-            saved = save_snapshot(grid_state)
-            if saved:
-                print("\n=== SAVED GRID STATE ===")
-                pprint(grid_state)
+                    if saved:
+                        print("\n=== SAVED GRID STATE ===")
+                        pprint(grid_state)
 
-            last_day, last_tick = grid_state["day"], grid_state["tick"]
+                    last_day, last_tick = day, tick
+                    write_status({
+                        "mode": "azure",
+                        "generation": generation,
+                        "day": day,
+                        "tick": tick,
+                        "completed": False,
+                        "updated_at": time.time(),
+                    })
 
         except Exception as e:
             print("GRID ERROR:", e)
 
         # Module telemetry is delivered by board push; no polling here.
-        sleep_s = TEST_TICK_SECONDS if test_mode_enabled else MODULE_POLL_INTERVAL
-        _sleep_interruptible(sleep_s, test_mode_enabled)
+        time.sleep(MODULE_POLL_INTERVAL)
