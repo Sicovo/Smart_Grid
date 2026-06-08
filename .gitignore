@@ -10,6 +10,8 @@ smartgrid.db
 # Runtime state — current active algorithm, persisted via /algo/active
 buysellalgorithm/active_algo.json
 buysellalgorithm/__pycache__/
+backend/poller_control.json
+backend/poller_status.json
 
 # Frontend
 frontend/node_modules/

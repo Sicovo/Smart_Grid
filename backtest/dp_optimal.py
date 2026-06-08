@@ -9,7 +9,7 @@ import math
 import os
 import numpy as np
 
-from buysellalgorithm import scheduler, served_tracker, forecast
+from buysellalgorithm import scheduler, forecast
 from buysellalgorithm.naive import Deferrable
 
 from backtest.harness import (
@@ -21,8 +21,13 @@ from backtest.harness import (
 
 
 def precompute_eff_load(day, deferrables):
-    """Run smart's scheduler forward, returning per-tick (eff_load, pv_bus)."""
-    served_tracker.reset_all()
+    """Run smart's scheduler forward, returning per-tick (eff_load, pv_bus).
+
+    Scheduler is now stateless on per-day served-J (removed alongside
+    served_tracker); we still track it locally to subtract from each
+    Deferrable.energy before passing it in, so Azure's repeated full
+    obligation publication doesn't cause over-service.
+    """
     served = {}
     eff = np.zeros(60)
     pv  = np.zeros(60)
@@ -31,10 +36,12 @@ def precompute_eff_load(day, deferrables):
         demand = float(entry['demand'])
         sun = forecast.expected_sun(t)
         pv[t] = sun * (PV_PEAK_W / 100.0) * PV_ETA
-        rate, detail = scheduler.allocate_all(
-            [Deferrable(d.index, d.tick_start, d.tick_end, d.energy) for d in deferrables],
-            t, dict(served)
-        )
+        adj = [
+            Deferrable(d.index, d.tick_start, d.tick_end,
+                       max(0.0, d.energy - served.get(d.index, 0.0)))
+            for d in deferrables
+        ]
+        rate, detail = scheduler.allocate_all(adj, t)
         eff[t] = demand + rate
         for d in detail:
             served[d['index']] = served.get(d['index'], 0.0) + d['rate_W'] * SECONDS_PER_TICK

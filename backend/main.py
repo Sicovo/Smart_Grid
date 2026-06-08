@@ -34,6 +34,9 @@ from buysellalgorithm import registry as algo_registry  # noqa: E402
 app = FastAPI()
 
 MODULE_CMD_TIMEOUT = float(os.getenv("MODULE_CMD_TIMEOUT", "2"))
+POLLER_CONTROL_PATH = Path(__file__).resolve().parent / "poller_control.json"
+POLLER_STATUS_PATH = Path(__file__).resolve().parent / "poller_status.json"
+_poller_control_lock = threading.Lock()
 MODULE_CMD_TARGETS = {
     "pv": os.getenv("PICO_PV_URL", "http://192.168.137.24"),
     "grid": os.getenv("PICO_GRID_URL", "http://192.168.137.23"),
@@ -362,6 +365,78 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {"message": "Smart Grid Backend is running"}
+
+
+def _read_json_file(path, default):
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return default
+
+
+def _write_json_file(path, payload):
+    temp_path = path.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    temp_path.replace(path)
+
+
+def _next_fixed_run_day():
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(GridSnapshot.day)
+            .filter(GridSnapshot.day >= 1, GridSnapshot.day < 1_000_000)
+            .order_by(desc(GridSnapshot.day))
+            .first()
+        )
+        highest_day = 0 if row is None else int(row[0])
+        control = _read_json_file(POLLER_CONTROL_PATH, {})
+        reserved_day = _i(control.get("run_day"), 0)
+        if control.get("mode") == "fixed" and 1 <= reserved_day < 1_000_000:
+            highest_day = max(highest_day, reserved_day)
+
+        next_day = highest_day + 1
+        if next_day >= 1_000_000:
+            raise HTTPException(
+                status_code=409,
+                detail="Fixed run day range 1..999999 is exhausted",
+            )
+        return next_day
+    finally:
+        db.close()
+
+
+@app.get("/poller/source")
+def get_poller_source():
+    control = _read_json_file(
+        POLLER_CONTROL_PATH,
+        {"mode": "azure", "generation": "default", "run_day": None},
+    )
+    status = _read_json_file(POLLER_STATUS_PATH, {})
+    if str(status.get("generation")) != str(control.get("generation")):
+        status = {}
+    return {**control, "status": status}
+
+
+@app.post("/poller/source")
+def set_poller_source(payload: dict):
+    mode = str(payload.get("mode", "")).lower()
+    if mode not in {"azure", "fixed"}:
+        raise HTTPException(status_code=422, detail="mode must be azure or fixed")
+
+    with _poller_control_lock:
+        generation = str(time.time_ns())
+        control = {
+            "mode": mode,
+            "generation": generation,
+            "run_day": _next_fixed_run_day() if mode == "fixed" else None,
+            "requested_at": datetime.utcnow().isoformat(),
+        }
+        _write_json_file(POLLER_CONTROL_PATH, control)
+    return {"ok": True, **control, "status": {}}
+
 
 @app.get("/snapshots")
 def get_snapshots(limit: int = 50):

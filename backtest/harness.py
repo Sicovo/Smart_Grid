@@ -27,7 +27,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Tuple
 
-from buysellalgorithm import naive, smart_v1, forecast, served_tracker
+from buysellalgorithm import naive, smart_v1, forecast
 from buysellalgorithm.naive import GridState, Deferrable
 
 
@@ -91,7 +91,10 @@ def replay(
     if deferrables is None:
         deferrables = default_deferrables()
 
-    served_tracker.reset_all()
+    # Local cumulative served-J per deferable index. (Used to be persisted in
+    # buysellalgorithm.served_tracker; that module was removed when the
+    # scheduler/naive refactored. The harness still tracks it here so we
+    # don't over-serve when Azure republishes obligations each tick.)
     served_J: Dict[int, float] = {}
 
     v_cap = v_cap_start
@@ -117,16 +120,21 @@ def replay(
         pv_panel   = sun_now * (PV_PEAK_W / 100.0)
         pv_bus_W   = pv_panel * PV_ETA
 
+        # Pre-subtract already-served energy from each deferable (since
+        # the algorithms no longer take a served-J map after the refactor).
+        adj_deferrables = [
+            Deferrable(d.index, d.tick_start, d.tick_end,
+                       max(0.0, d.energy - served_J.get(d.index, 0.0)))
+            for d in deferrables
+        ]
         state = GridState(
-            tick                 = t,
-            pv_p                 = pv_panel,
-            demand_p             = demand,
-            vbus                 = v_bus,
-            v_cap                = v_cap,
-            energy_cap           = _v_to_energy(v_cap),
-            deferrables          = [Deferrable(d.index, d.tick_start, d.tick_end, d.energy) for d in deferrables],
-            deferrables_served_J = dict(served_J),
-            day                  = 0,
+            tick        = t,
+            pv_p        = pv_panel,
+            demand_p    = demand,
+            vbus        = v_bus,
+            v_cap       = v_cap,
+            energy_cap  = _v_to_energy(v_cap),
+            deferrables = adj_deferrables,
         )
         # Optional: leak real prices through to algorithms that look for them.
         state.actual_sell_price = sell

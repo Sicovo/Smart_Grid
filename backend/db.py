@@ -179,6 +179,21 @@ def save_snapshot(state):
 
     return True
 
+
+def get_latest_grid_tick(day):
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(GridSnapshot.tick)
+            .filter(GridSnapshot.day == day)
+            .order_by(GridSnapshot.tick.desc())
+            .first()
+        )
+        return int(row[0]) if row is not None else None
+    finally:
+        db.close()
+
+
 def save_module_snapshot(payload):
     """Store one telemetry frame from any firmware module (identified by role)."""
     g = payload.get
