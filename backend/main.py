@@ -30,6 +30,7 @@ from buysellalgorithm.naive import (  # noqa: E402
     commands_to_diagnostics as algo_commands_to_diagnostics,
 )
 from buysellalgorithm import registry as algo_registry  # noqa: E402
+from buysellalgorithm import served_tracker as algo_served_tracker  # noqa: E402
 
 app = FastAPI()
 
@@ -269,6 +270,14 @@ def _run_naive_from_db(grid_row, module_rows):
     state = algo_state_from_db_rows(grid_row, pv_row, cap_row)
     if state is None:
         return {"error": "No grid snapshot available"}
+
+    # Azure republishes the ORIGINAL deferrable energies every tick; the
+    # algorithm needs *remaining* joules or it will re-allocate the same
+    # energy every tick (LED over-driven by ~200 J/day). Mirror the
+    # served_J accounting that the backtest harness does internally.
+    state.deferrables = algo_served_tracker.current_remaining(
+        state.deferrables, state.tick
+    )
 
     active   = algo_registry.get_active()
     cmd      = active.decide_fn(state)
@@ -761,6 +770,21 @@ def _compute_and_apply_naive(db, log_decision=False):
     trace["dispatch_finished_ns"] = time.time_ns()
 
     all_ok = all(bool(r.get("ok")) for r in applied.values())
+
+    # Only the LED actually consumes the deferrable energy. Credit the
+    # served-J tracker only when its dispatch succeeded — otherwise the
+    # next tick will see (correctly) that the obligation is still open.
+    # Commit is idempotent per (tick, day-sig), so read-path calls to
+    # /algo/naive don't double-count.
+    if applied.get("led", {}).get("ok"):
+        try:
+            diag = recommendation.get("diagnostics", {}) or {}
+            algo_served_tracker.commit(
+                diag.get("active_deferrables", []) or [],
+                recommendation.get("tick"),
+            )
+        except Exception as exc:
+            print(f"[served_tracker] commit failed: {exc}")
 
     if log_decision:
         try:

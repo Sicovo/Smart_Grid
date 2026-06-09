@@ -89,6 +89,12 @@ def decide(state: GridState) -> Commands:
     cap_p       = 0.0
     cap_headroom = 0.0
 
+    # REVERTED V2 cap-only deadband. Lab test 2026-06-08 showed the 0.3 W
+    # threshold + the lowered passive thresholds in cap_policy created a
+    # noise-driven flap loop: cap issued 5× more commands but moved 1/10
+    # the energy (3 J vs 33 J swing). Sim was clean; reality has ~1 W
+    # bus noise floor (droop dynamics + LED PWM ripple + sample jitter).
+    # Stick with the proven V1 threshold for cap actions.
     if target_W > POWER_DEADBAND_W:
         # CHARGE the cap.
         cmd.regime = "surplus" if action.reason.startswith("passive") else "arb_charge"

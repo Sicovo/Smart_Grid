@@ -147,6 +147,15 @@ class GridState:
     energy_cap:  float                          # cap energy (J)
     deferrables: List[Deferrable] = field(default_factory=list)
 
+    # Real current-tick prices from the Azure feed. Used by smart_v1's
+    # cap_policy to replace the forecast for current-tick economics —
+    # forecast σ is ~19 ¢/J on real Azure data, so trusting forecast on
+    # the present side blocks ~50 % of valid arb opportunities. Both
+    # None means "fall back to forecast" — that's how the algorithm
+    # behaved before this plumbing was added.
+    actual_sell_price: Optional[float] = None   # ¢/J at this tick
+    actual_buy_price:  Optional[float] = None   # ¢/J at this tick
+
 
 @dataclass
 class CapCmd:
@@ -439,14 +448,26 @@ def state_from_db_rows(grid_row, pv_row, cap_row) -> Optional[GridState]:
     if vbus <= 0:
         vbus = _f(getattr(pv_row, 'vb_bus', None))
 
+    # Plumb the current-tick actual prices through to smart_v1's cap_policy.
+    # The grid_row carries the live Azure prices for this tick; without this,
+    # cap_policy falls back to forecast (mean curve) and misses arbitrage
+    # opportunities whenever actual diverges from forecast by more than the
+    # arb trigger (~50 ¢/J). Lab trace tick 4-9 saw forecast=35 but actual
+    # 11-24 — without plumbing, the algorithm refuses to charge cheap; with
+    # it, gain clears the trigger and the cap fills before the morning peak.
+    actual_sell = _f(getattr(grid_row, 'sell_price', None), default=-1.0)
+    actual_buy  = _f(getattr(grid_row, 'buy_price',  None), default=-1.0)
+
     return GridState(
-        tick        = _i(getattr(grid_row, 'tick', 0)),
-        pv_p        = max(0.0, _f(getattr(pv_row,  'p_panel',        None))),
-        demand_p    = max(0.0, _f(getattr(grid_row,'instant_demand', None))),
-        vbus        = vbus,
-        v_cap       = _f(getattr(cap_row, 'v_cap',    None)),
-        energy_cap  = max(0.0, _f(getattr(cap_row, 'energy_J', None))),
-        deferrables = deferrables,
+        tick              = _i(getattr(grid_row, 'tick', 0)),
+        pv_p              = max(0.0, _f(getattr(pv_row,  'p_panel',        None))),
+        demand_p          = max(0.0, _f(getattr(grid_row,'instant_demand', None))),
+        vbus              = vbus,
+        v_cap             = _f(getattr(cap_row, 'v_cap',    None)),
+        energy_cap        = max(0.0, _f(getattr(cap_row, 'energy_J', None))),
+        deferrables       = deferrables,
+        actual_sell_price = actual_sell if actual_sell >= 0 else None,
+        actual_buy_price  = actual_buy  if actual_buy  >= 0 else None,
     )
 
 

@@ -80,6 +80,21 @@ REFILL_V_THRESHOLD       = 12.0     # V
 REFILL_HORIZON_TICKS     = 8
 REFILL_GAIN_TRIGGER      = 20.0     # ¢/J
 
+# Peak window — ticks where Azure's deterministic structure puts sell_price
+# above ~80 ¢/J (sun=0 after tick 45, demand still at 100 until tick 50).
+# Before this window: refuse passive_discharge so the cap stays full for
+# the harvest. arb_discharge still works for actual-price spikes.
+# After EOD_DRAIN_TICK: forced full drain (existing rule).
+# Lab trace (V3) showed cap getting drained at moderate-price ticks
+# (sell 49-63) leaving it empty for the real peaks (sell 88-138).
+PEAK_WINDOW_START_TICK   = 42
+
+# Absolute sell-price below which we refuse to spend cap pre-peak.
+# Forecast-comparison rules failed because forecast σ ≈ 19 ¢/J corrupts
+# the comparison; a fixed cutoff is noise-immune. 70 ¢/J cleanly
+# separates "moderate" (spend grid) from "harvest" (spend cap).
+PRE_PEAK_DISCHARGE_FLOOR = 70.0
+
 
 @dataclass
 class CapAction:
@@ -155,7 +170,14 @@ def decide(
 
     charge_headroom_J, discharge_avail_J = _cap_soc_headroom(v_cap)
     can_charge    = charge_headroom_J  > 1.0 and v_cap < V_CAP_CHARGE_STOP - 0.2
-    can_discharge = discharge_avail_J > 1.0 and v_cap > V_CAP_DISCHARGE_TAPER + 0.2
+    # FIX 1 (lab trace 2026-06-08): the previous v_cap > 11.2 V threshold
+    # refused discharge in the 10.5–11.2 V band, but the firmware's
+    # _discharge_i_max linearly tapers current from full at 11.0 V to 0
+    # at 10.5 V — i.e. the firmware IS willing to deliver partial current
+    # there, and smart_v1's outer code already respects that taper when
+    # clamping i_cmd. Refusing here just locks away ~5 J of usable energy
+    # right when peak prices hit (see tick 17 sell=115 → 1984 ¢ lost).
+    can_discharge = discharge_avail_J > 0.5 and v_cap > V_CAP_DISCHARGE_STOP + 0.1
 
     # Physical ceiling on bus-side charge power for this tick. Cap-aware
     # clamp: prevents the "import 3 W with only 1.3 W of headroom" pattern
@@ -276,10 +298,23 @@ def decide(
         )
 
     # --- 3. Passive — naive reactive rule, within safe envelope ---
+    # REVERTED from V2 ±0.5 → ±1.0 (V1 baseline). Lab test 2026-06-08 showed
+    # the lower threshold + noisy real bus (±1 W droop/LED-lag) caused a
+    # charge-discharge flap loop — cap moved 86 commands but only 3 J of
+    # energy (vs V1: 17 commands, 33 J). Keep noise out of the cap path.
     if current_net_W > 1.0 and can_charge:
         target_W = min(max_charge_bus_W, current_net_W)
         return CapAction(target_W, "passive_charge")
     if current_net_W < -1.0 and can_discharge:
+        # 4 save-for-peak rule variants tested in backtest: time-based,
+        # forecast-comparison (1.10 / 1.30 ratios), absolute-threshold
+        # sweep (floor=50 through 100). ALL regressed 2-14 pp vs the
+        # reactive V3 baseline. Root cause: finite cap (33 J) can only
+        # cover a fraction of any day's peak — round-tripping it through
+        # moderate-price deficits and the peak harvests ALREADY captures
+        # most of the value. Saving cap for "the peak" leaves it idle
+        # while cycles 2 and 3 of value go missed. See sweep result in
+        # this commit message. Stay reactive.
         target_W = -min(I_CAP_MAX * vbus * ETA_CAP_SMPS, -current_net_W)
         return CapAction(target_W, "passive_discharge")
 
