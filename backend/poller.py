@@ -15,10 +15,13 @@ from concurrent.futures import ThreadPoolExecutor
 AZURE_BASE_URL = "https://icelec50015.azurewebsites.net"
 AZURE_REQUEST_TIMEOUT = float(os.getenv("AZURE_REQUEST_TIMEOUT", "5"))
 FIXED_TICK_INTERVAL = float(os.getenv("FIXED_TICK_INTERVAL", "5"))
-# Poll interval: 1 s so tick detection latency is bounded by 1 s instead of
-# aliasing against the 5 s Azure tick. At 2 s, decisions arrive at irregular
-# 4 s / 6 s spacing depending on phase. At 1 s, they land at consistent ~5 s.
-MODULE_POLL_INTERVAL = float(os.getenv("MODULE_POLL_INTERVAL", "1"))
+# Poll /demand once per second. Only fetch the remaining Azure endpoints
+# after day/tick changes, preserving the original request pattern.
+GRID_POLL_INTERVAL = float(os.getenv("GRID_POLL_INTERVAL", "1"))
+BACKEND_NOTIFY_URL = os.getenv(
+    "BACKEND_NOTIFY_URL", "http://127.0.0.1:8000/internal/grid-tick"
+)
+BACKEND_NOTIFY_TIMEOUT = float(os.getenv("BACKEND_NOTIFY_TIMEOUT", "0.5"))
 BACKEND_DIR = Path(__file__).resolve().parent
 FIXED_DATA_PATH = BACKEND_DIR / "fixed_grid_data.json"
 CONTROL_PATH = BACKEND_DIR / "poller_control.json"
@@ -31,6 +34,21 @@ def get_json(url, timeout):
     r = requests.get(url, timeout=timeout)
     r.raise_for_status()
     return r.json()
+
+
+def notify_backend_grid_tick(grid_state):
+    """Wake the backend auto-loop after the committed snapshot is visible."""
+    try:
+        response = requests.post(
+            BACKEND_NOTIFY_URL,
+            json={"day": grid_state["day"], "tick": grid_state["tick"]},
+            timeout=BACKEND_NOTIFY_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        # The backend has a periodic fallback, so notification failure should
+        # not stop Azure collection.
+        print("BACKEND TICK NOTIFY ERROR:", exc)
 
 
 def build_grid_state_from_demand(demand):
@@ -164,6 +182,7 @@ if __name__ == "__main__":
                     if saved:
                         print("\n=== SAVED FIXED GRID STATE ===")
                         pprint(grid_state)
+                        notify_backend_grid_tick(grid_state)
 
                     fixed_index += 1
                     next_fixed_at = now + FIXED_TICK_INTERVAL
@@ -195,6 +214,7 @@ if __name__ == "__main__":
                     if saved:
                         print("\n=== SAVED GRID STATE ===")
                         pprint(grid_state)
+                        notify_backend_grid_tick(grid_state)
 
                     last_day, last_tick = day, tick
                     write_status({
@@ -210,4 +230,4 @@ if __name__ == "__main__":
             print("GRID ERROR:", e)
 
         # Module telemetry is delivered by board push; no polling here.
-        time.sleep(MODULE_POLL_INTERVAL)
+        time.sleep(GRID_POLL_INTERVAL)

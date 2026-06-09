@@ -212,8 +212,10 @@ def _push_tlm(state):
         resp = s.recv(1024)
         s.close()
         print('[cap push] sent to', BACKEND_PUSH_HOST)
+        return True
     except Exception as e:
         print('[cap push] error:', e)
+        return False
 
 
 def _serve_dashboard_html(sock):
@@ -239,17 +241,23 @@ def _http_server(state, port):
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(('0.0.0.0', port))
     s.listen(2)
-    s.settimeout(0.5)   # accept() returns every 500 ms so we can re-check state['shutdown']
+    s.settimeout(0.5)   # accept() returns periodically to service telemetry pushes
     gc_count = 0
     last_push_ms = time.ticks_ms()
     while not state.get('shutdown', False):
         # Check if it's time to push telemetry
         now_ms = time.ticks_ms()
-        if time.ticks_diff(now_ms, last_push_ms) >= BACKEND_PUSH_INTERVAL_MS:
+        push_now = bool(state.get('push_tlm_now', False))
+        heartbeat_due = (
+            time.ticks_diff(now_ms, last_push_ms) >= BACKEND_PUSH_INTERVAL_MS
+        )
+        if push_now or heartbeat_due:
             try:
                 _push_tlm(state)
             except Exception:
                 pass
+            state['push_tlm_now'] = False
+            # A command-triggered push becomes the new heartbeat epoch.
             last_push_ms = now_ms
         
         cl = None

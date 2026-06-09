@@ -180,6 +180,7 @@ state = {
     'tlm':         {},
     'last_cmd_ms': time.ticks_ms(),
     'last_cmd_received_ms': 0,
+    'push_tlm_now': False,
 }
 
 # ---------------- Control state ----------------
@@ -214,6 +215,7 @@ _active_trace_id = None
 _active_trace_tick = None
 _active_trace_received_ms = 0
 _active_trace_applied_ms = 0
+_last_trace_published = None
 
 # ---- Cycle-test state ----
 # Phases: 'idle' -> 'precharge' -> 'settle1' -> 'charging' -> 'settle2'
@@ -656,6 +658,12 @@ try:
                     'test_eta_self_discharge': _test_eta_self_discharge,
                     'test_eta_roundtrip':      _test_eta_roundtrip,
                 }
+                if (
+                    _active_trace_id is not None
+                    and _active_trace_id != _last_trace_published
+                ):
+                    _last_trace_published = _active_trace_id
+                    state['push_tlm_now'] = True
 
             # ---- Safety guards ----
             if _va > V_CAP_OVERVOLT:

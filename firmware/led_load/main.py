@@ -77,6 +77,8 @@ state = {
     'cmd':  {'enable': 1, 'p_red': 0.0, 'p_yel': 0.0, 'p_grn': 0.0},
     'tlm':  {},
     'last_cmd_ms': time.ticks_ms(),
+    'last_cmd_received_ms': 0,
+    'push_tlm_now': False,
 }
 
 timer_elapsed = 0
@@ -97,6 +99,11 @@ pis = {name: PI(KP_I, KI_I, out_lo=float(PWM_LO), out_hi=float(PWM_HI))
 
 trip_latched = 0
 trip_reason  = ''
+active_trace_id = None
+active_trace_tick = None
+active_trace_received_ms = 0
+active_trace_applied_ms = 0
+last_trace_published = None
 
 # ---------------- Boot-time ADC diagnostic ----------------
 # Sample each SPI ADC channel a few times BEFORE the control loop starts, so
@@ -130,6 +137,12 @@ try:
             timer_elapsed = 0
 
             cmd      = state['cmd']
+            trace_id = cmd.get('_trace_id')
+            if trace_id is not None and trace_id != active_trace_id:
+                active_trace_id = trace_id
+                active_trace_tick = cmd.get('_trace_tick')
+                active_trace_received_ms = state.get('last_cmd_received_ms', 0)
+                active_trace_applied_ms = time.ticks_ms()
 
             # Trip reset from dashboard (one-shot). Per-channel checks below
             # immediately re-latch this tick if any channel is still over-current.
@@ -182,6 +195,21 @@ try:
                 tlm['d_'  + name] = duty_out
 
             state['tlm'] = tlm
+            tlm['trace_id'] = active_trace_id
+            tlm['trace_tick'] = active_trace_tick
+            tlm['fw_cmd_received_ms'] = active_trace_received_ms
+            tlm['fw_cmd_applied_ms'] = active_trace_applied_ms
+            tlm['fw_cmd_to_apply_ms'] = (
+                time.ticks_diff(
+                    active_trace_applied_ms, active_trace_received_ms
+                ) if active_trace_received_ms else None
+            )
+            if (
+                active_trace_id is not None
+                and active_trace_id != last_trace_published
+            ):
+                last_trace_published = active_trace_id
+                state['push_tlm_now'] = True
 
             cnt += 1
             if cnt >= 500:

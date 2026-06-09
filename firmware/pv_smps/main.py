@@ -360,6 +360,8 @@ state = {
     'cmd':         {'enable': 1, 'vmpp_target': VMPP_TARGET},
     'tlm':         {},
     'last_cmd_ms': time.ticks_ms(),
+    'last_cmd_received_ms': 0,
+    'push_tlm_now': False,
 }
 
 # ============================================================
@@ -391,6 +393,11 @@ _pavg_n     = 0
 _pavg_start = 0
 _p_avg3s    = 0.0
 _prev_mode  = None
+_active_trace_id = None
+_active_trace_tick = None
+_active_trace_received_ms = 0
+_active_trace_applied_ms = 0
+_last_trace_published = None
 
 def _reset_controllers():
     """Zero the outer V-loop and inner I-loop integrators + i_ref, AND
@@ -499,6 +506,12 @@ try:
         _p_lp = _vb_lp * _il_lp
 
         cmd     = state['cmd']
+        trace_id = cmd.get('_trace_id')
+        if trace_id is not None and trace_id != _active_trace_id:
+            _active_trace_id = trace_id
+            _active_trace_tick = cmd.get('_trace_tick')
+            _active_trace_received_ms = state.get('last_cmd_received_ms', 0)
+            _active_trace_applied_ms = time.ticks_ms()
         enabled = bool(cmd.get('enable', 1))
 
         # ---- MPPT comparison test commands ----
@@ -666,7 +679,20 @@ try:
                                        if _mppt_test_phase != 'idle' else ''),
             'mppt_test_fixed_vmpp':   _mppt_test_fixed_vmpp,
             'mppt_test_p_avg_last':   _mppt_test_p_avg_last,
+            'trace_id':               _active_trace_id,
+            'trace_tick':             _active_trace_tick,
+            'fw_cmd_received_ms':     _active_trace_received_ms,
+            'fw_cmd_applied_ms':      _active_trace_applied_ms,
+            'fw_cmd_to_apply_ms':     time.ticks_diff(
+                _active_trace_applied_ms, _active_trace_received_ms
+            ) if _active_trace_received_ms else None,
         }
+        if (
+            _active_trace_id is not None
+            and _active_trace_id != _last_trace_published
+        ):
+            _last_trace_published = _active_trace_id
+            state['push_tlm_now'] = True
 
         # ---- Safety guards (non-latching; auto-recover) ----
         if _vb < VB_CRASH_THRESHOLD:

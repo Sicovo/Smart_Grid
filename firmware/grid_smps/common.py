@@ -215,8 +215,10 @@ def _push_tlm(state):
         resp = s.recv(1024)
         s.close()
         print('[grid push] sent to', BACKEND_PUSH_HOST)
+        return True
     except Exception as e:
         print('[grid push] error:', e)
+        return False
 
 
 def _serve_dashboard_html(sock):
@@ -246,11 +248,16 @@ def _http_server(state, port):
     last_push_ms = time.ticks_ms()
     while not state.get('shutdown', False):
         now_ms = time.ticks_ms()
-        if time.ticks_diff(now_ms, last_push_ms) >= BACKEND_PUSH_INTERVAL_MS:
+        push_now = bool(state.get('push_tlm_now', False))
+        heartbeat_due = (
+            time.ticks_diff(now_ms, last_push_ms) >= BACKEND_PUSH_INTERVAL_MS
+        )
+        if push_now or heartbeat_due:
             try:
                 _push_tlm(state)
             except Exception:
                 pass
+            state['push_tlm_now'] = False
             last_push_ms = now_ms
         cl = None
         try:
@@ -284,8 +291,10 @@ def _http_server(state, port):
                     cmd = json.loads(body)
                     if isinstance(cmd, dict):
                         print('[cmd] received', cmd)
+                        received_ms = time.ticks_ms()
+                        state['last_cmd_ms'] = received_ms
+                        state['last_cmd_received_ms'] = received_ms
                         state['cmd'].update(cmd)
-                        state['last_cmd_ms'] = time.ticks_ms()
                         _sendall(cl, b'HTTP/1.1 200 OK\r\n' + CORS +
                                  b'Content-Length: 2\r\nConnection: close\r\n\r\nOK')
                     else:

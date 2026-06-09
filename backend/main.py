@@ -748,6 +748,20 @@ def _compute_and_apply_naive(db, log_decision=False):
         "grid_saved_at": grid_row.timestamp.isoformat(),
         "decision_started_ns": decision_started_ns,
         "decision_finished_ns": decision_finished_ns,
+        "input_telemetry_age_ms": {
+            role: (
+                round(
+                    (
+                        datetime.utcfromtimestamp(decision_started_ns / 1e9)
+                        - row.timestamp
+                    ).total_seconds() * 1000.0,
+                    3,
+                )
+                if row is not None
+                else None
+            )
+            for role, row in module_rows.items()
+        },
     }
     recommendation["latency_trace"] = trace
 
@@ -827,11 +841,12 @@ def apply_naive_recommendation():
 # style health (snapshot freshness, module trips) and skips the apply when
 # anything looks wrong, so a single bad tick doesn't push unsafe setpoints.
 
-_AUTO_POLL_S  = float(os.getenv("AUTO_NAIVE_POLL_S",  "1.0"))
+_AUTO_FALLBACK_S = float(os.getenv("AUTO_NAIVE_FALLBACK_S", "5.0"))
 _AUTO_STALE_S = float(os.getenv("AUTO_NAIVE_STALE_S", "15.0"))
 
 _auto_lock       = threading.Lock()
 _auto_stop_event = threading.Event()
+_auto_wake_event = threading.Event()
 _auto_thread     = None
 _auto_state = {
     "running":           False,
@@ -844,9 +859,21 @@ _auto_state = {
     "last_error":        None,
     "applied_count":     0,
     "skipped_count":     0,
-    "poll_s":            _AUTO_POLL_S,
+    "trigger_mode":      "grid_tick_event",
+    "fallback_s":        _AUTO_FALLBACK_S,
     "stale_s":           _AUTO_STALE_S,
 }
+
+
+@app.post("/internal/grid-tick")
+def notify_grid_tick(payload: dict):
+    """Wake auto mode after poller commits a new GridSnapshot."""
+    _auto_wake_event.set()
+    return {
+        "ok": True,
+        "day": _i(payload.get("day")),
+        "tick": _i(payload.get("tick")),
+    }
 
 
 def _auto_loop_iteration():
@@ -905,9 +932,12 @@ def _auto_loop_iteration():
 
 
 def _auto_loop_worker():
-    """Long-running thread body. Polls every _AUTO_POLL_S seconds, calls
-    one iteration, updates the published _auto_state, and sleeps."""
+    """Run once per committed grid-tick event, with a slow DB fallback."""
     while not _auto_stop_event.is_set():
+        _auto_wake_event.wait(_AUTO_FALLBACK_S)
+        _auto_wake_event.clear()
+        if _auto_stop_event.is_set():
+            break
         try:
             result = _auto_loop_iteration()
             with _auto_lock:
@@ -924,8 +954,6 @@ def _auto_loop_worker():
             with _auto_lock:
                 _auto_state["last_error"] = str(exc)
             print(f"[naive auto] iteration error: {exc}")
-        # Use Event.wait so /algo/auto/stop returns quickly.
-        _auto_stop_event.wait(_AUTO_POLL_S)
 
 
 @app.post("/algo/auto/start")
@@ -936,6 +964,7 @@ def auto_naive_start():
             return {"ok": True, "already_running": True,
                     "state": dict(_auto_state)}
         _auto_stop_event.clear()
+        _auto_wake_event.set()
         _auto_state["running"]       = True
         _auto_state["started_at"]    = datetime.utcnow().isoformat()
         _auto_state["stopped_at"]    = None
@@ -964,6 +993,16 @@ _SAFE_DEFAULTS = {
 }
 
 
+def _dispatch_module_cmds(targets):
+    """Dispatch a role->payload mapping in parallel."""
+    with ThreadPoolExecutor(max_workers=max(1, len(targets))) as ex:
+        futures = {
+            role: ex.submit(_post_module_cmd, role, payload)
+            for role, payload in targets.items()
+        }
+        return {role: future.result() for role, future in futures.items()}
+
+
 @app.post("/algo/auto/stop")
 def auto_naive_stop():
     """Stop the auto-loop AND broadcast safe-default commands to every
@@ -986,6 +1025,7 @@ def auto_naive_stop():
         if _auto_state["running"]:
             was_running = True
             _auto_stop_event.set()
+            _auto_wake_event.set()
             _auto_state["running"]    = False
             _auto_state["stopped_at"] = datetime.utcnow().isoformat()
 
@@ -1160,6 +1200,7 @@ def latest_end_to_end_latency():
                     tlm_received_ns, source_received_ns
                 ),
             },
+            "input_telemetry_age_ms": trace.get("input_telemetry_age_ms", {}),
             "confirmation": confirmation,
             "measurement_note": (
                 "Azure does not expose its server-side update timestamp. "

@@ -67,6 +67,8 @@ state = {
     'cmd':  {'enable': 1, 'vb_target': VB_TARGET_DEFAULT, 'i_ref_max': I_REF_HI},
     'tlm':  {},
     'last_cmd_ms': time.ticks_ms(),
+    'last_cmd_received_ms': 0,
+    'push_tlm_now': False,
 }
 
 timer_elapsed = 0
@@ -115,6 +117,11 @@ pavg_n     = 0
 pavg_start = 0
 p_avg3s    = 0.0
 prev_op    = None
+active_trace_id = None
+active_trace_tick = None
+active_trace_received_ms = 0
+active_trace_applied_ms = 0
+last_trace_published = None
 
 loop_timer = Timer(mode=Timer.PERIODIC, freq=TICK_HZ, callback=tick)
 cnt = 0
@@ -153,6 +160,12 @@ try:
             p_lp = vb_lp * iL_lp
 
             cmd     = state['cmd']
+            trace_id = cmd.get('_trace_id')
+            if trace_id is not None and trace_id != active_trace_id:
+                active_trace_id = trace_id
+                active_trace_tick = cmd.get('_trace_tick')
+                active_trace_received_ms = state.get('last_cmd_received_ms', 0)
+                active_trace_applied_ms = time.ticks_ms()
             target  = cmd.get('vb_target', VB_TARGET_DEFAULT)
             i_max   = min(I_REF_HI, max(0.0, cmd.get('i_ref_max', I_REF_HI)))
             wd      = watchdog_tripped(state, time.ticks_ms())
@@ -234,7 +247,20 @@ try:
                 'enable':    1 if enabled else 0,
                 'wd':        1 if wd else 0,
                 'grace':     startup_grace,
+                'trace_id':   active_trace_id,
+                'trace_tick': active_trace_tick,
+                'fw_cmd_received_ms': active_trace_received_ms,
+                'fw_cmd_applied_ms': active_trace_applied_ms,
+                'fw_cmd_to_apply_ms': time.ticks_diff(
+                    active_trace_applied_ms, active_trace_received_ms
+                ) if active_trace_received_ms else None,
             }
+            if (
+                active_trace_id is not None
+                and active_trace_id != last_trace_published
+            ):
+                last_trace_published = active_trace_id
+                state['push_tlm_now'] = True
 
             cnt += 1
             if cnt >= 500:
