@@ -78,12 +78,15 @@ def _normalize_host(host):
 
 
 def _post_module_cmd(role, payload):
+    command_started_ns = time.time_ns()
     host = _normalize_host(MODULE_CMD_TARGETS.get(role, ""))
     if not host:
         return {
             "ok": False,
             "status": "skipped",
             "reason": f"No host configured for role {role}",
+            "command_started_ns": command_started_ns,
+            "command_finished_ns": time.time_ns(),
         }
 
     parsed = urlparse(host)
@@ -131,6 +134,8 @@ def _post_module_cmd(role, payload):
             "url": host.rstrip("/") + "/cmd",
             "payload": payload,
             "response": response_body[:200],
+            "command_started_ns": command_started_ns,
+            "command_finished_ns": time.time_ns(),
         }
     except OSError as exc:
         print(f"[cmd proxy] error {role} -> {host}/cmd reason={exc}")
@@ -140,6 +145,8 @@ def _post_module_cmd(role, payload):
             "url": host.rstrip("/") + "/cmd",
             "payload": payload,
             "reason": str(exc),
+            "command_started_ns": command_started_ns,
+            "command_finished_ns": time.time_ns(),
         }
 
 
@@ -176,6 +183,7 @@ def receive_module_tlm(role: str, payload: dict):
 
     if payload.get("role") != role:
         payload["role"] = role
+    payload["backend_tlm_received_ns"] = time.time_ns()
 
     try:
         if not save_module_snapshot(payload):
@@ -535,6 +543,12 @@ def _module_row_dict(row):
         "energy_J":    row.energy_J,
         "i_cmd":       row.i_cmd,
         "i_cmd_eff":   row.i_cmd_eff,
+        "trace_id":     row.trace_id,
+        "trace_tick":   row.trace_tick,
+        "fw_cmd_received_ms": row.fw_cmd_received_ms,
+        "fw_cmd_applied_ms": row.fw_cmd_applied_ms,
+        "fw_cmd_to_apply_ms": row.fw_cmd_to_apply_ms,
+        "backend_tlm_received_ns": row.backend_tlm_received_ns,
         "i_red":       row.i_red,
         "i_yel":       row.i_yel,
         "i_grn":       row.i_grn,
@@ -692,6 +706,7 @@ def _compute_and_apply_naive(db, log_decision=False):
     flow current only when cap saturates and the bus leaves the 9.9–10.1 V
     deadband.
     """
+    decision_started_ns = time.time_ns()
     grid_row = (
         db.query(GridSnapshot)
         .order_by(desc(GridSnapshot.id))
@@ -711,18 +726,39 @@ def _compute_and_apply_naive(db, log_decision=False):
     if "error" in recommendation:
         return {"error": recommendation["error"]}
 
+    decision_finished_ns = time.time_ns()
+    trace_id = (
+        f"{grid_row.day}:{grid_row.tick}:{grid_row.id}:{decision_started_ns}"
+    )
+    trace = {
+        "trace_id": trace_id,
+        "day": grid_row.day,
+        "tick": grid_row.tick,
+        "source_fetch_started_ns": grid_row.source_fetch_started_ns,
+        "source_fetch_received_ns": grid_row.source_fetch_received_ns,
+        "grid_saved_at": grid_row.timestamp.isoformat(),
+        "decision_started_ns": decision_started_ns,
+        "decision_finished_ns": decision_finished_ns,
+    }
+    recommendation["latency_trace"] = trace
+
     suggested = recommendation.get("suggested", {}) or {}
     targets = {}
     for role in ("cap", "led", "grid", "export"):
         payload = suggested.get(role, {})
-        targets[role] = payload if isinstance(payload, dict) else {}
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        payload["_trace_id"] = trace_id
+        payload["_trace_tick"] = grid_row.tick
+        targets[role] = payload
 
+    trace["dispatch_started_ns"] = time.time_ns()
     with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {
             role: ex.submit(_post_module_cmd, role, payload)
             for role, payload in targets.items()
         }
         applied = {role: fut.result() for role, fut in futures.items()}
+    trace["dispatch_finished_ns"] = time.time_ns()
 
     all_ok = all(bool(r.get("ok")) for r in applied.values())
 
@@ -948,6 +984,167 @@ def auto_naive_stop():
 def auto_naive_status():
     with _auto_lock:
         return dict(_auto_state)
+
+
+def _elapsed_ms(end_ns, start_ns):
+    if end_ns is None or start_ns is None:
+        return None
+    return round((int(end_ns) - int(start_ns)) / 1_000_000.0, 3)
+
+
+@app.get("/latency/latest")
+def latest_end_to_end_latency():
+    """Return the newest Azure-to-cap-telemetry latency breakdown."""
+    db = SessionLocal()
+    try:
+        recommendation = {}
+        applied = {}
+        for row in (
+            db.query(NaiveDecision)
+            .order_by(desc(NaiveDecision.id))
+            .limit(100)
+            .all()
+        ):
+            candidate = json.loads(str(row.recommendation_json or "{}"))
+            if candidate.get("latency_trace", {}).get("trace_id"):
+                recommendation = candidate
+                applied = json.loads(str(row.applied_json or "{}"))
+                break
+
+        if not recommendation:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No traced decision yet. Check /algo/auto/status; the "
+                    "auto loop may be waiting for a new tick or skipping a "
+                    "tripped module."
+                ),
+            )
+
+        trace = recommendation["latency_trace"]
+        trace_id = trace["trace_id"]
+        cap_apply = applied.get("cap", {}) or {}
+        cap_payload = cap_apply.get("payload", {}) or {}
+        requested_i = _f(cap_payload.get("i_cmd"))
+        cap_rows = (
+            db.query(ModuleSnapshot)
+            .filter(
+                ModuleSnapshot.role == "cap",
+                ModuleSnapshot.trace_id == trace_id,
+            )
+            .order_by(ModuleSnapshot.id)
+            .limit(30)
+            .all()
+        )
+
+        def row_confirmation(row):
+            command_reflected = (
+                row.i_cmd is not None
+                and abs(float(row.i_cmd) - requested_i) <= 0.001
+            )
+            if abs(requested_i) <= 0.01:
+                physical_response = (
+                    row.i_cmd_eff is not None
+                    and row.iL is not None
+                    and abs(float(row.i_cmd_eff)) <= 0.03
+                    and abs(float(row.iL)) <= 0.05
+                )
+            else:
+                physical_response = (
+                    row.iL is not None
+                    and float(row.iL) * requested_i > 0
+                    and abs(float(row.iL)) >= min(
+                        0.03, abs(requested_i) * 0.2
+                    )
+                )
+            return command_reflected, physical_response
+
+        cap_row = None
+        for candidate in cap_rows:
+            reflected, responded = row_confirmation(candidate)
+            if reflected and responded:
+                cap_row = candidate
+                break
+        if cap_row is None and cap_rows:
+            cap_row = cap_rows[0]
+
+        command_reflected = False
+        physical_response = False
+        confirmation = None
+        if cap_row is not None:
+            command_reflected, physical_response = row_confirmation(cap_row)
+            confirmation = {
+                "received_at": cap_row.timestamp.isoformat(),
+                "control_command_reflected": command_reflected,
+                "physical_response_observed": physical_response,
+                "requested_i_cmd_A": requested_i,
+                "effective_i_cmd_A": cap_row.i_cmd_eff,
+                "measured_current_A": cap_row.iL,
+                "pwm": cap_row.pwm,
+                "bus_voltage_V": cap_row.vb_bus,
+                "cap_voltage_V": cap_row.v_cap,
+            }
+
+        source_received_ns = trace.get("source_fetch_received_ns")
+        tlm_received_ns = (
+            cap_row.backend_tlm_received_ns if cap_row is not None else None
+        )
+        return {
+            "status": (
+                "confirmed"
+                if command_reflected and physical_response
+                else "command_reflected"
+                if command_reflected
+                else "awaiting_cap_telemetry"
+            ),
+            "trace_id": trace_id,
+            "algo_id": recommendation.get("algo_id"),
+            "algo_name": recommendation.get("algo_name"),
+            "day": trace.get("day"),
+            "tick": trace.get("tick"),
+            "latency_ms": {
+                "azure_http_fetch": _elapsed_ms(
+                    trace.get("source_fetch_received_ns"),
+                    trace.get("source_fetch_started_ns"),
+                ),
+                "fetch_received_to_decision_start": _elapsed_ms(
+                    trace.get("decision_started_ns"), source_received_ns
+                ),
+                "algorithm_decision": _elapsed_ms(
+                    trace.get("decision_finished_ns"),
+                    trace.get("decision_started_ns"),
+                ),
+                "decision_to_dispatch": _elapsed_ms(
+                    trace.get("dispatch_started_ns"),
+                    trace.get("decision_finished_ns"),
+                ),
+                "parallel_dispatch": _elapsed_ms(
+                    trace.get("dispatch_finished_ns"),
+                    trace.get("dispatch_started_ns"),
+                ),
+                "cap_http_command_round_trip": _elapsed_ms(
+                    cap_apply.get("command_finished_ns"),
+                    cap_apply.get("command_started_ns"),
+                ),
+                "pico_command_receive_to_control_loop": (
+                    cap_row.fw_cmd_to_apply_ms if cap_row is not None else None
+                ),
+                "cap_command_start_to_telemetry_received": _elapsed_ms(
+                    tlm_received_ns, cap_apply.get("command_started_ns")
+                ),
+                "fetch_received_to_confirming_telemetry": _elapsed_ms(
+                    tlm_received_ns, source_received_ns
+                ),
+            },
+            "confirmation": confirmation,
+            "measurement_note": (
+                "Azure does not expose its server-side update timestamp. "
+                "The E2E start is the first /demand response received by "
+                "this backend that contains the new tick."
+            ),
+        }
+    finally:
+        db.close()
 
 
 # ============================================================

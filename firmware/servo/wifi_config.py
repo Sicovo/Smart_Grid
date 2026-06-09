@@ -1,0 +1,8 @@
+WIFI_SSID = "PICO_AP"
+WIFI_PASS = "12345688"
+
+# Keep this unique on the Pico AP network.
+STATIC_IP = "192.168.137.27"
+SUBNET = "255.255.255.0"
+GATEWAY = "192.168.137.1"
+DNS = "192.168.137.1"

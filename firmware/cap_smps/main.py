@@ -179,6 +179,7 @@ state = {
     'cmd':         {'enable': 1, 'i_cmd': 0.0},
     'tlm':         {},
     'last_cmd_ms': time.ticks_ms(),
+    'last_cmd_received_ms': 0,
 }
 
 # ---------------- Control state ----------------
@@ -209,6 +210,10 @@ _pavg_n     = 0
 _pavg_start = 0
 _p_avg3s    = 0.0
 _prev_op    = None     # (round(i_cmd, 3), int(enabled), test_phase)
+_active_trace_id = None
+_active_trace_tick = None
+_active_trace_received_ms = 0
+_active_trace_applied_ms = 0
 
 # ---- Cycle-test state ----
 # Phases: 'idle' -> 'precharge' -> 'settle1' -> 'charging' -> 'settle2'
@@ -401,6 +406,12 @@ try:
             _p_lp = _vb_lp * _il_lp
 
             cmd       = state['cmd']
+            trace_id  = cmd.get('_trace_id')
+            if trace_id is not None and trace_id != _active_trace_id:
+                _active_trace_id = trace_id
+                _active_trace_tick = cmd.get('_trace_tick')
+                _active_trace_received_ms = state.get('last_cmd_received_ms', 0)
+                _active_trace_applied_ms = time.ticks_ms()
             enabled   = bool(cmd.get('enable', 1))
             i_cmd_raw = float(cmd.get('i_cmd', 0.0))
 
@@ -615,6 +626,13 @@ try:
                     'energy_J':    energy_J(_va_lp),
                     'i_cmd':       i_cmd_raw,
                     'i_cmd_eff':   i_cmd_eff,
+                    'trace_id':    _active_trace_id,
+                    'trace_tick':  _active_trace_tick,
+                    'fw_cmd_received_ms': _active_trace_received_ms,
+                    'fw_cmd_applied_ms':  _active_trace_applied_ms,
+                    'fw_cmd_to_apply_ms': time.ticks_diff(
+                        _active_trace_applied_ms, _active_trace_received_ms
+                    ) if _active_trace_received_ms else None,
                     'pwm':         int(_pwm_out),
                     'trip':        _trip_active,
                     'trip_reason': _trip_reason,

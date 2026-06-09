@@ -1,4 +1,7 @@
-from sqlalchemy import create_engine, Column, Integer, Float, DateTime, String, UniqueConstraint
+from sqlalchemy import (
+    create_engine, Column, Integer, BigInteger, Float, DateTime, String,
+    UniqueConstraint, text,
+)
 import json
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
@@ -27,6 +30,8 @@ class GridSnapshot(Base):
     sell_price = Column(Float)
     instant_demand = Column(Float)
     deferables_json = Column(String)
+    source_fetch_started_ns = Column(BigInteger)
+    source_fetch_received_ns = Column(BigInteger)
 
 
 class ModuleSnapshot(Base):
@@ -71,6 +76,12 @@ class ModuleSnapshot(Base):
     energy_J  = Column(Float)
     i_cmd     = Column(Float)
     i_cmd_eff = Column(Float)
+    trace_id  = Column(String, index=True)
+    trace_tick = Column(Integer)
+    fw_cmd_received_ms = Column(Integer)
+    fw_cmd_applied_ms = Column(Integer)
+    fw_cmd_to_apply_ms = Column(Integer)
+    backend_tlm_received_ns = Column(BigInteger)
 
     # LED CC driver (3 channels)
     i_red = Column(Float)
@@ -130,22 +141,38 @@ def _si(v):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    # Lightweight migration: add algo_id column to naive_decisions if an
-    # older DB pre-dates it. SQLite doesn't error if the column already
-    # exists once we've checked PRAGMA table_info.
     with engine.connect() as conn:
-        from sqlalchemy import text
-        cols = conn.execute(text("PRAGMA table_info(naive_decisions)")).fetchall()
-        col_names = {c[1] for c in cols}
-        if "algo_id" not in col_names:
-            try:
-                conn.execute(text(
-                    "ALTER TABLE naive_decisions ADD COLUMN algo_id TEXT DEFAULT 'naive'"
-                ))
-                conn.commit()
-                print("[db] migrated: added algo_id column to naive_decisions")
-            except Exception as exc:
-                print(f"[db] migration warning: {exc}")
+        migrations = {
+            "grid_snapshots": {
+                "source_fetch_started_ns": "BIGINT",
+                "source_fetch_received_ns": "BIGINT",
+            },
+            "module_snapshots": {
+                "trace_id": "TEXT",
+                "trace_tick": "INTEGER",
+                "fw_cmd_received_ms": "INTEGER",
+                "fw_cmd_applied_ms": "INTEGER",
+                "fw_cmd_to_apply_ms": "INTEGER",
+                "backend_tlm_received_ns": "BIGINT",
+            },
+            "naive_decisions": {
+                "algo_id": "TEXT DEFAULT 'naive'",
+            },
+        }
+        for table, additions in migrations.items():
+            cols = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            col_names = {c[1] for c in cols}
+            for column, sql_type in additions.items():
+                if column in col_names:
+                    continue
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
+                    ))
+                    conn.commit()
+                    print(f"[db] migrated: added {table}.{column}")
+                except Exception as exc:
+                    print(f"[db] migration warning for {table}.{column}: {exc}")
 
 def save_snapshot(state):
     db = SessionLocal()
@@ -171,6 +198,8 @@ def save_snapshot(state):
         sell_price=state["sell_price"],
         instant_demand=state["instant_demand"],
         deferables_json=json.dumps(state.get("deferables", [])),
+        source_fetch_started_ns=_ii(state.get("source_fetch_started_ns")),
+        source_fetch_received_ns=_ii(state.get("source_fetch_received_ns")),
     )
 
     db.add(snapshot)
@@ -225,6 +254,12 @@ def save_module_snapshot(payload):
         energy_J    = _fi(g('energy_J')),
         i_cmd       = _fi(g('i_cmd')),
         i_cmd_eff   = _fi(g('i_cmd_eff')),
+        trace_id    = _si(g('trace_id')),
+        trace_tick  = _ii(g('trace_tick')),
+        fw_cmd_received_ms = _ii(g('fw_cmd_received_ms')),
+        fw_cmd_applied_ms = _ii(g('fw_cmd_applied_ms')),
+        fw_cmd_to_apply_ms = _ii(g('fw_cmd_to_apply_ms')),
+        backend_tlm_received_ns = _ii(g('backend_tlm_received_ns')),
         i_red       = _fi(g('i_red')),
         i_yel       = _fi(g('i_yel')),
         i_grn       = _fi(g('i_grn')),

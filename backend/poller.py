@@ -154,9 +154,12 @@ if __name__ == "__main__":
                 total = len(fixed_data["ticks"])
 
                 if fixed_index < total and now >= next_fixed_at:
+                    fetch_started_ns = time.time_ns()
                     grid_state = build_grid_state_from_fixed(
                         fixed_data, fixed_index, run_day
                     )
+                    grid_state["source_fetch_started_ns"] = fetch_started_ns
+                    grid_state["source_fetch_received_ns"] = time.time_ns()
                     saved = save_snapshot(grid_state)
                     if saved:
                         print("\n=== SAVED FIXED GRID STATE ===")
@@ -175,14 +178,18 @@ if __name__ == "__main__":
                         "updated_at": time.time(),
                     })
             else:
+                fetch_started_ns = time.time_ns()
                 demand = get_json(
                     AZURE_BASE_URL + "/demand", AZURE_REQUEST_TIMEOUT
                 )
+                fetch_received_ns = time.time_ns()
                 day = demand["day"]
                 tick = demand["tick"]
 
                 if (day, tick) != (last_day, last_tick):
                     grid_state = build_grid_state_from_demand(demand)
+                    grid_state["source_fetch_started_ns"] = fetch_started_ns
+                    grid_state["source_fetch_received_ns"] = fetch_received_ns
                     saved = save_snapshot(grid_state)
 
                     if saved:

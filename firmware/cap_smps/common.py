@@ -284,8 +284,10 @@ def _http_server(state, port):
                     cmd = json.loads(body)
                     if isinstance(cmd, dict):
                         print('[cmd] received', cmd)
+                        received_ms = time.ticks_ms()
+                        state['last_cmd_ms'] = received_ms
+                        state['last_cmd_received_ms'] = received_ms
                         state['cmd'].update(cmd)
-                        state['last_cmd_ms'] = time.ticks_ms()
                         _sendall(cl, b'HTTP/1.1 200 OK\r\n' + CORS +
                                  b'Content-Length: 2\r\nConnection: close\r\n\r\nOK')
                     else:
