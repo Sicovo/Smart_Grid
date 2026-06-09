@@ -305,7 +305,7 @@ function GlobalChart({ data, theme = "dark" }) {
               contentStyle={{
                 background: tooltipBackground,
                 border: `1px solid ${tooltipBorder}`,
-                borderRadius: 6,
+                borderRadius: "var(--radius-control)",
                 fontSize: 11,
               }}
               itemStyle={{ color: tooltipText }}
@@ -334,6 +334,32 @@ function GlobalChart({ data, theme = "dark" }) {
         left axis mixed: V and A · main reference: Vbus deadband 9.5–10.5 V
       </div>
     </div>
+  );
+}
+
+export function SmpsSystemAdvancedPanel({
+  modules,
+  history,
+  theme = "dark",
+  onSetAllEnabled,
+}) {
+  return (
+    <section className="smps-system-advanced">
+      <div className="smps-system-advanced-head">
+        <div>
+          <h3>Live bus diagnostics</h3>
+          <p>Raw module telemetry, bus deadband, and combined current traces.</p>
+        </div>
+        <div className="smps-quickbar">
+          <Btn onClick={() => onSetAllEnabled(true)}>Enable all modules</Btn>
+          <Btn variant="danger" onClick={() => onSetAllEnabled(false)}>
+            Disable all modules
+          </Btn>
+        </div>
+      </div>
+      <BusGauge vbus={getBusVoltage(modules)} />
+      <GlobalChart data={history} theme={theme} />
+    </section>
   );
 }
 
@@ -430,6 +456,7 @@ function CapStats({ d }) {
       <Stat label="Pcap 3s avg" val={d.p_avg3s} unit="W" digits={3} sub="resets on i_cmd change" />
       <Stat label="i_cmd" val={d.i_cmd} unit="A" digits={3} sub={cmdSub} />
       <Stat label="Direction" val={dir} tag="cap" />
+      <Stat label="Energy stored" val={d.energy_J} unit="J" digits={1} />
 
       <div className="smps-stat smps-stat-wide" data-tag="cap">
         <div className="smps-stat-label">State of charge</div>
@@ -441,8 +468,6 @@ function CapStats({ d }) {
           <div className="smps-soc-fill" style={{ width: `${soc}%` }} />
         </div>
       </div>
-
-      <Stat label="Energy stored" val={d.energy_J} unit="J" digits={1} />
     </>
   );
 }
@@ -480,6 +505,28 @@ function LEDStats({ d, lastBusVoltage }) {
 }
 
 // ─── Controls ────────────────────────────────────────────────────────────────
+
+function RangeSlider({ min, max, value, ...props }) {
+  const numericMin = Number(min);
+  const numericMax = Number(max);
+  const numericValue = Number(value);
+  const progress =
+    Number.isFinite(numericValue) && numericMax > numericMin
+      ? ((numericValue - numericMin) / (numericMax - numericMin)) * 100
+      : 0;
+
+  return (
+    <input
+      {...props}
+      className="smps-slider"
+      type="range"
+      min={min}
+      max={max}
+      value={value}
+      style={{ "--slider-progress": `${Math.max(0, Math.min(100, progress))}%` }}
+    />
+  );
+}
 
 function PVControls({ d, onCmd }) {
   const [vmpp, setVmpp] = useState("6.23");
@@ -752,9 +799,7 @@ function CapCycleTest({ onCmd, data }) {
       </CtrlRow>
 
       <CtrlRow label="Hold">
-        <input
-          className="smps-slider"
-          type="range"
+        <RangeSlider
           min="0"
           max="600"
           step="1"
@@ -805,9 +850,7 @@ function CapControls({ d, onCmd }) {
   return (
     <>
       <CtrlRow label="i_cmd">
-        <input
-          className="smps-slider"
-          type="range"
+        <RangeSlider
           min="-0.60"
           max="0.60"
           step="0.01"
@@ -853,9 +896,7 @@ function LEDControls({ onCmd }) {
     <>
       {["red", "yel", "grn"].map((c) => (
         <CtrlRow key={c} label={`p_${c}`}>
-          <input
-            className="smps-slider"
-            type="range"
+          <RangeSlider
             min="0"
             max="3"
             step="0.05"
@@ -1050,7 +1091,7 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage, 
               contentStyle={{
                 background: tooltipBackground,
                 border: `1px solid ${tooltipBorder}`,
-                borderRadius: 5,
+                borderRadius: "var(--radius-control)",
                 fontSize: 11,
               }}
               itemStyle={{ color: tooltipText }}

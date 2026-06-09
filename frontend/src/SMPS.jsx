@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
-import { ModuleAdvancedPanel } from "./SmpsModules";
+import { ModuleAdvancedPanel, SmpsSystemAdvancedPanel } from "./SmpsModules";
 
 const ROLES = ["pv", "grid", "export", "cap", "led"];
 const ROLE_COLUMNS = [
@@ -72,6 +72,42 @@ function getBusVoltage(modules) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return null;
+}
+
+function buildGlobalTelemetryHistory(hist) {
+  const length = Math.max(0, ...ROLES.map((role) => hist?.[role]?.length || 0));
+
+  return Array.from({ length }, (_, index) => {
+    const rows = Object.fromEntries(
+      ROLES.map((role) => {
+        const roleHistory = hist?.[role] || [];
+        const offset = length - roleHistory.length;
+        return [role, roleHistory[index - offset] || null];
+      })
+    );
+    const led = rows.led || {};
+    const timestamp =
+      rows.grid?.timestamp ||
+      rows.export?.timestamp ||
+      rows.pv?.timestamp ||
+      rows.cap?.timestamp ||
+      rows.led?.timestamp;
+
+    return {
+      t: timestamp ? new Date(timestamp).toLocaleTimeString() : String(index + 1),
+      vbus: getBusVoltage(rows),
+      i_pv: rows.pv?.iL ?? null,
+      i_grid: rows.grid?.iL ?? null,
+      i_export: rows.export?.iL ?? null,
+      i_cap: rows.cap?.iL ?? null,
+      i_led:
+        [led.i_red, led.i_yel, led.i_grn].some(
+          (value) => typeof value === "number" && Number.isFinite(value)
+        )
+          ? (led.i_red || 0) + (led.i_yel || 0) + (led.i_grn || 0)
+          : null,
+    };
+  });
 }
 
 function fmt(v, digits = 2) {
@@ -255,7 +291,7 @@ function OverviewGraphCard({ data, theme = "dark" }) {
               contentStyle={{
                 backgroundColor: tooltipBackground,
                 borderColor: tooltipBorder,
-                borderRadius: "8px",
+                borderRadius: "var(--radius-control)",
               }}
               labelStyle={{ color: tooltipLabel }}
             />
@@ -315,13 +351,13 @@ function AlgorithmTabs({ apiBase, activeId, onSwitch, switching, switchMsg }) {
               disabled={switching}
               title={a.description}
             >
-              <span className="algo-tab-dot">{isActive ? "●" : "○"}</span>
               <span className="algo-tab-label">{a.name}</span>
+              {isActive && <span className="algo-tab-state">Active</span>}
             </button>
           );
         })}
       </div>
-      {switchMsg && <div className="algo-tabs-msg">{switchMsg}</div>}
+      {switchMsg && <div className="algo-tabs-msg algo-tabs-error">{switchMsg}</div>}
     </div>
   );
 }
@@ -334,17 +370,6 @@ function AlgoExtrasPanel({ naive }) {
   const extras = naive?.diagnostics?.algo_extras;
   if (!extras || Object.keys(extras).length === 0) return null;
 
-  const panelStyle = {
-    border: "1px solid rgba(128,128,128,0.25)",
-    background: "rgba(127,127,127,0.08)",
-    borderRadius: 6,
-    padding: "8px 10px",
-    fontSize: 13,
-    color: "inherit",
-    marginTop: 10,
-  };
-  const mutedStyle = { color: "rgba(127,127,127,0.85)" };
-
   // Pretty-print the Smart V1 shape if recognised, otherwise dump generically.
   const isSmartV1 =
     "cap_action_reason" in extras || "forecast_now" in extras;
@@ -352,45 +377,52 @@ function AlgoExtrasPanel({ naive }) {
   if (isSmartV1) {
     const fn = extras.forecast_now || {};
     return (
-      <div style={panelStyle}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>
-          Smart V1 forecast & decision
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+      <section className="algo-section-card">
+        <div className="algo-section-heading">
           <div>
-            <div style={mutedStyle}>cap action</div>
-            <strong>{extras.cap_action_reason || "—"}</strong>
-          </div>
-          <div>
-            <div style={mutedStyle}>target W (bus)</div>
-            <strong>{extras.cap_action_target_W?.toFixed?.(2) ?? "—"}</strong>
-          </div>
-          <div>
-            <div style={mutedStyle}>arb gain (¢/J)</div>
-            <strong>{extras.cap_arb_gain?.toFixed?.(1) ?? "—"}</strong>
-          </div>
-          <div>
-            <div style={mutedStyle}>horizon (ticks)</div>
-            <strong>{extras.cap_arb_horizon_t ?? "—"}</strong>
+            <h3>Smart V1 forecast</h3>
+            <p>Forecast-aware capacitor decision for the current tick.</p>
           </div>
         </div>
-        <div style={{ marginTop: 8, ...mutedStyle, fontSize: 12 }}>
-          forecast at this tick — sell <strong>{fn.sell_price ?? "—"}</strong>  ·
-          buy <strong>{fn.buy_price ?? "—"}</strong> ·
-          PV <strong>{fn.pv_bus_W ?? "—"} W</strong> ·
-          demand <strong>{fn.demand_W ?? "—"} W</strong>
+
+        <div className="algo-metric-grid">
+          <Metric label="Cap action" value={extras.cap_action_reason || "—"} />
+          <Metric label="Bus target" value={extras.cap_action_target_W?.toFixed?.(2) ?? "—"} unit="W" />
+          <Metric label="Arbitrage gain" value={extras.cap_arb_gain?.toFixed?.(1) ?? "—"} unit="¢/J" />
+          <Metric label="Horizon" value={extras.cap_arb_horizon_t ?? "—"} unit="ticks" />
         </div>
-      </div>
+
+        <div className="algo-forecast-strip">
+          <Metric label="Sell price" value={fn.sell_price ?? "—"} />
+          <Metric label="Buy price" value={fn.buy_price ?? "—"} />
+          <Metric label="Forecast PV" value={fn.pv_bus_W ?? "—"} unit="W" />
+          <Metric label="Forecast demand" value={fn.demand_W ?? "—"} unit="W" />
+        </div>
+      </section>
     );
   }
 
   // Generic fallback — list keys/values.
   return (
-    <div style={panelStyle}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>Algorithm extras</div>
+    <section className="algo-section-card">
+      <div className="algo-section-heading">
+        <h3>Algorithm extras</h3>
+      </div>
       <pre style={{ margin: 0, fontSize: 11, overflowX: "auto" }}>
         {JSON.stringify(extras, null, 2)}
       </pre>
+    </section>
+  );
+}
+
+function Metric({ label, value, unit = "" }) {
+  return (
+    <div className="algo-metric">
+      <span>{label}</span>
+      <strong>
+        {value}
+        {unit && <small>{unit}</small>}
+      </strong>
     </div>
   );
 }
@@ -399,7 +431,6 @@ function AlgoExtrasPanel({ naive }) {
 function NaiveDispatchCard({
   apiBase,
   naive,
-  theme = "dark",
   advanced = false,
   activeAlgorithm,
   autoStatus,
@@ -407,21 +438,12 @@ function NaiveDispatchCard({
   applyBusy,
   applyMsg,
   onApply,
-  showHostConfig,
-  onToggleHostConfig,
-  backendHosts,
-  onHostsChange,
-  onSaveHosts,
-  hostsMsg,
-  autoApply,
-  onAutoApplyChange,
-  cooldownSec,
-  onCooldownChange,
   activeAlgoId,
   onSwitchAlgo,
   switchingAlgo,
   switchAlgoMsg,
 }) {
+  const [runRefreshToken, setRunRefreshToken] = useState(0);
   const algoLabel =
     activeAlgorithm?.name ||
     naive?.algo_name ||
@@ -434,14 +456,13 @@ function NaiveDispatchCard({
   const netCost = todayCost?.net_cost;
   return (
     <section className="card smps-plot-card smps-overview-card smps-algorithm-card">
-      <div className="card-header">
-        <span className="icon-green">●</span> Algorithm Dispatch
-        <span style={{ marginLeft: 8, fontSize: 12, color: "rgba(127,127,127,0.85)", fontWeight: 400 }}>
-          · {algoLabel}
+      <div className="card-header algorithm-card-header">
+        <span className="algorithm-card-title">
+          <span>Algorithm Dispatch</span>
         </span>
+        <span className="algorithm-card-name">{algoLabel}</span>
         <span
           className={`system-run-state ${autoStatus?.running ? "running" : "stopped"}`}
-          style={{ marginLeft: "auto" }}
         >
           {autoStatus?.running ? "Running" : "Stopped"}
         </span>
@@ -451,10 +472,6 @@ function NaiveDispatchCard({
         <div>
           <span>Regime</span>
           <strong>{regime}</strong>
-        </div>
-        <div>
-          <span>Tick</span>
-          <strong>{naive?.tick ?? "—"}</strong>
         </div>
         <div>
           <span>Net balance</span>
@@ -498,76 +515,21 @@ function NaiveDispatchCard({
             switchMsg={switchAlgoMsg}
           />
 
-          <NaiveDebugPanel naive={naive} theme={theme} />
+          <NaiveDebugPanel naive={naive} />
 
           <AlgoExtrasPanel naive={naive} />
 
-          <div className="naive-toolbar">
-            <label className="naive-auto-label">
-              <input
-                type="checkbox"
-                checked={autoApply}
-                onChange={(e) => onAutoApplyChange(e.target.checked)}
-              />
-              Auto apply
-            </label>
+          <RunCostPanel apiBase={apiBase} refreshToken={runRefreshToken} />
 
-            <label className="naive-auto-label">
-              Cooldown
-              <input
-                className="naive-cooldown-input"
-                type="number"
-                min="1"
-                step="1"
-                value={cooldownSec}
-                onChange={(e) => onCooldownChange(Number(e.target.value) || 1)}
-              />
-              s
-            </label>
-
-            <button className="naive-host-toggle" onClick={onToggleHostConfig}>
-              {showHostConfig ? "Hide backend hosts" : "Edit backend hosts"}
-            </button>
-          </div>
-
-          {showHostConfig && (
-            <div className="naive-host-panel">
-              <div className="naive-host-grid">
-                <label>
-                  cap
-                  <input
-                    value={backendHosts.cap}
-                    onChange={(e) => onHostsChange({ ...backendHosts, cap: e.target.value })}
-                    placeholder="http://192.168.137.23"
-                  />
-                </label>
-                <label>
-                  led
-                  <input
-                    value={backendHosts.led}
-                    onChange={(e) => onHostsChange({ ...backendHosts, led: e.target.value })}
-                    placeholder="http://192.168.137.24"
-                  />
-                </label>
-              </div>
-              <div className="naive-host-actions">
-                <button className="naive-host-save" onClick={onSaveHosts}>
-                  Save backend hosts
-                </button>
-                {hostsMsg && <span className="naive-host-msg">{hostsMsg}</span>}
-              </div>
-            </div>
-          )}
-
-          <button className="btn-pink" onClick={() => onApply()} disabled={applyBusy || !naive}>
-            {applyBusy ? "Applying..." : "Apply to all 4 modules (cap, led, grid, export)"}
-          </button>
-
-          {applyMsg && <p className="naive-apply-msg">{applyMsg}</p>}
-
-          <RunCostPanel apiBase={apiBase} />
-          <ServerAutoLoopPanel apiBase={apiBase} />
-          <DataExportPanel apiBase={apiBase} />
+          <AlgorithmRunControls
+            apiBase={apiBase}
+            applyBusy={applyBusy}
+            applyMsg={applyMsg}
+            canTest={!!naive}
+            onTest={onApply}
+            refreshToken={runRefreshToken}
+            onRefresh={() => setRunRefreshToken((token) => token + 1)}
+          />
         </div>
       )}
     </section>
@@ -578,19 +540,10 @@ function NaiveDispatchCard({
 // ---- "What is the algorithm doing right now?" debug panel ----
 // Reads `naive.diagnostics` (populated by buysellalgorithm/naive.py's
 // commands_to_diagnostics) and renders a compact, glanceable view.
-function NaiveDebugPanel({ naive, theme = "dark" }) {
+function NaiveDebugPanel({ naive }) {
   const d   = naive?.diagnostics || {};
-  const inp = naive?.inputs || {};
   const fmt = (v, n = 2, suf = "") =>
     typeof v === "number" ? `${v.toFixed(n)}${suf}` : "—";
-
-  const isLightTheme = theme === "light";
-
-  const regime = d.regime || naive?.regime || "—";
-  const regimeColor =
-    regime === "surplus" ? "#1f9d55" :
-    regime === "deficit" ? "#d4351c" :
-    regime === "idle"    ? "#666"    : "#aaa";
 
   const active = Array.isArray(d.active_deferrables) ? d.active_deferrables : [];
   const clamp  = d.cap_clamped || "";
@@ -607,81 +560,54 @@ function NaiveDebugPanel({ naive, theme = "dark" }) {
   const panelStyle = {
     border: "1px solid rgba(128,128,128,0.25)",
     background: "rgba(127,127,127,0.08)",
-    borderRadius: 6,
+    borderRadius: "var(--radius-control)",
     padding: "8px 10px",
     fontSize: 13,
     color: "inherit",
   };
   const mutedStyle  = { color: "rgba(127,127,127,0.85)" };
-  const accentGreen = "#3fc380";
-  const accentRed   = "#ef5350";
 
   return (
-    <div className="naive-debug" style={{ display: "grid", gap: 10, color: "inherit" }}>
-      {/* Top status strip */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <span
-              style={{
-                background: regimeColor,
-                color: isLightTheme ? "#1a2333" : "#fff",
-                padding: "2px 10px",
-                borderRadius: 4,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                fontSize: 12,
-                letterSpacing: 0.5,
-              }}
-            >
-          {regime}
-        </span>
-        <span style={{ fontSize: 13, ...mutedStyle }}>
-          tick <strong style={{ color: "inherit" }}>{naive?.tick ?? "—"}</strong>
-        </span>
-        <span style={{ fontSize: 13, ...mutedStyle }}>
-          net <strong style={{ color: "inherit" }}>{fmt(d.net_W, 2, " W")}</strong>
-        </span>
-        {regime === "surplus" && d.surplus_W > 0.05 && (
-          <span style={{ fontSize: 13, color: accentGreen }}>
-            exporting {fmt(d.surplus_W, 2, " W")} (cap saturated)
-          </span>
-        )}
-        {regime === "deficit" && d.deficit_W > 0.05 && (
-          <span style={{ fontSize: 13, color: accentRed }}>
-            importing {fmt(d.deficit_W, 2, " W")} (cap can't cover)
-          </span>
-        )}
-      </div>
-
+    <div className="naive-debug">
       {/* Bus-side energy balance */}
-      <div style={{ ...panelStyle, lineHeight: 1.7 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>Bus-side energy balance</div>
-        <div>
-          PV panel <strong>{fmt(d.pv_panel_W, 2, " W")}</strong>
-          {" × η="}<code>{fmt(d.pv_eta_used, 2)}</code>
-          {" → bus "}<strong style={{ color: accentGreen }}>{fmt(d.pv_bus_W, 2, " W")}</strong>
+      <section className="algo-section-card">
+        <div className="algo-section-heading">
+          <div>
+            <h3>Bus-side energy balance</h3>
+            <p>Current power flow after conversion losses and active loads.</p>
+          </div>
         </div>
-        <div>
-          load = demand <strong>{fmt(d.demand_W, 2, " W")}</strong>
-          {" + deferrable rate "}<strong>{fmt(d.def_rate_total_W, 2, " W")}</strong>
-          {" = "}<strong style={{ color: accentRed }}>{fmt(d.effective_load_W, 2, " W")}</strong>
+
+        <div className="algo-flow-grid">
+          <div className="algo-flow-card generation">
+            <span>PV to bus</span>
+            <strong>{fmt(d.pv_bus_W, 2, " W")}</strong>
+            <small>
+              panel {fmt(d.pv_panel_W, 2, " W")} · efficiency {fmt(d.pv_eta_used, 2)}
+            </small>
+          </div>
+
+          <div className="algo-flow-card demand">
+            <span>Effective load</span>
+            <strong>{fmt(d.effective_load_W, 2, " W")}</strong>
+            <small>
+              demand {fmt(d.demand_W, 2, " W")} · deferrable {fmt(d.def_rate_total_W, 2, " W")}
+            </small>
+          </div>
+
+          <div className="algo-flow-card storage">
+            <span>Capacitor command</span>
+            <strong>{fmt(d.cap_p_W, 2, " W")}</strong>
+            <small>i_cmd {fmt(naive?.suggested?.cap?.i_cmd, 3, " A")}</small>
+          </div>
         </div>
-        <div>
-          net = pv_bus − load = <strong>{fmt(d.net_W, 2, " W")}</strong>
-        </div>
-        <div>
-          cap absorbs <strong>{fmt(d.cap_p_W, 2, " W")}</strong>
-          {" (i_cmd "}<code>{fmt(naive?.suggested?.cap?.i_cmd, 3, " A")}</code>{")"}
-          {clampLabel && (
-            <span style={{ marginLeft: 8, color: accentRed, fontSize: 12 }}>
-              ⚠ {clampLabel}
-            </span>
-          )}
-        </div>
-      </div>
+
+        {clampLabel && <div className="algo-warning">{clampLabel}</div>}
+      </section>
 
       {/* Active deferrables — the "what's filling up" view */}
-      <div style={panelStyle}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>
+      <div className="algo-detail-panel" style={panelStyle}>
+        <div className="algo-detail-title">
           Active deferrables ({active.length})
         </div>
         {active.length === 0 ? (
@@ -695,9 +621,9 @@ function NaiveDebugPanel({ naive, theme = "dark" }) {
                 <th style={{ padding: "2px 4px" }}>#</th>
                 <th style={{ padding: "2px 4px" }}>window</th>
                 <th style={{ padding: "2px 4px" }}>remaining</th>
-                <th style={{ padding: "2px 4px" }}>ticks left</th>
-                <th style={{ padding: "2px 4px" }}>rate now</th>
-                <th style={{ padding: "2px 4px", width: 120 }}>filling</th>
+                <th style={{ padding: "2px 4px" }}>Ticks left</th>
+                <th style={{ padding: "2px 4px" }}>Rate now</th>
+                <th style={{ padding: "2px 4px", width: 120 }}>Filling</th>
               </tr>
             </thead>
             <tbody>
@@ -716,18 +642,14 @@ function NaiveDebugPanel({ naive, theme = "dark" }) {
                       <strong>{fmt(ad.rate_W, 2, " W")}</strong>
                     </td>
                     <td style={{ padding: "4px" }}>
-                      <div style={{
-                        background: "rgba(127,127,127,0.2)", height: 10, borderRadius: 3,
-                        overflow: "hidden", position: "relative",
-                      }}>
-                        <div style={{
-                          width: `${Math.min(100, pct).toFixed(1)}%`,
-                          height: "100%",
-                          background: "linear-gradient(90deg, #4caf50, #2e7d32)",
-                        }} />
+                      <div className="progress-labels">
+                        <span>~{pct.toFixed(0)}% Served</span>
                       </div>
-                      <div style={{ fontSize: 10, ...mutedStyle, marginTop: 1 }}>
-                        ~{pct.toFixed(0)}% served
+                      <div className="progress-bg">
+                        <div
+                          className="progress-fill"
+                          style={{ width: `${Math.min(100, pct).toFixed(1)}%` }}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -739,17 +661,12 @@ function NaiveDebugPanel({ naive, theme = "dark" }) {
       </div>
 
       {/* Outgoing setpoints */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, fontSize: 12 }}>
+      <div className="algo-setpoint-grid">
         {[
           ["cap.i_cmd", fmt(naive?.suggested?.cap?.i_cmd, 3, " A")],
           ["LED each",  fmt(naive?.suggested?.led?.p_red, 2, " W")],
-          ["v_cap",     fmt(inp.v_cap_V, 2, " V")],
-          ["vbus",      fmt(inp.vbus_V, 2, " V")],
         ].map(([label, value]) => (
-          <div key={label} style={{
-            background: "rgba(127,127,127,0.12)", padding: 6, borderRadius: 4,
-            border: "1px solid rgba(128,128,128,0.2)",
-          }}>
+          <div key={label} className="algo-setpoint-card">
             <p style={{ margin: 0, ...mutedStyle }}>{label}</p>
             <h3 style={{ margin: 0, color: "inherit" }}>{value}</h3>
           </div>
@@ -757,8 +674,8 @@ function NaiveDebugPanel({ naive, theme = "dark" }) {
       </div>
 
       {d.led_clamped_W > 0.01 && (
-        <p style={{ color: accentRed, fontSize: 12 }}>
-          ⚠ LED setpoint clamped — {fmt(d.led_clamped_W, 2, " W")} couldn't be dissipated
+        <p className="algo-warning">
+          LED setpoint clamped: {fmt(d.led_clamped_W, 2, " W")} could not be dissipated
           (each channel hit 3 W cap)
         </p>
       )}
@@ -773,7 +690,7 @@ function NaiveDebugPanel({ naive, theme = "dark" }) {
 // recent earlier day we've recorded (may be partial if we started
 // mid-day). Price pairing: import × sell_price (we pay), export ×
 // buy_price (we earn). Net = import_cost − export_revenue.
-function RunCostPanel({ apiBase }) {
+function RunCostPanel({ apiBase, refreshToken = 0 }) {
   const [cost, setCost] = useState(null);
   const [err,  setErr]  = useState("");
 
@@ -799,73 +716,54 @@ function RunCostPanel({ apiBase }) {
     poll();
     const id = setInterval(poll, 3000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [apiBase]);
-
-  if (!cost && !err) {
-    return (
-      <div className="naive-host-panel" style={{ marginTop: 12 }}>
-        <div className="naive-toolbar"><strong>Daily P&L:</strong></div>
-        <p className="naive-host-msg">no run started yet</p>
-      </div>
-    );
-  }
+  }, [apiBase, refreshToken]);
 
   return (
-    <div className="naive-host-panel" style={{ marginTop: 12, color: "inherit" }}>
-      <div className="naive-toolbar" style={{ alignItems: "baseline" }}>
-        <strong>Daily P&L</strong>
-        <span style={{ fontSize: 11, color: "rgba(127,127,127,0.85)" }}>
-          since {cost?.run_started_at ? new Date(cost.run_started_at).toLocaleTimeString() : "—"}
-          {" · "}
-          {cost?.run_running === false && "stopped · "}
-          {cost?.price_ticks ?? 0} ticks recorded
+    <section className="algo-section-card algo-pnl-panel">
+      <div className="algo-section-heading">
+        <div>
+          <h3>Daily P&amp;L</h3>
+          <p>Import cost, export revenue, and net result for the current algorithm run.</p>
+        </div>
+        <span className="algo-panel-meta">
+          {cost?.run_started_at ? `since ${new Date(cost.run_started_at).toLocaleTimeString()}` : "-"}
+          {cost?.run_started_at && ` · ${cost?.run_running ? "running" : "stopped"} · ${cost?.price_ticks ?? 0} ticks`}
         </span>
       </div>
 
       {err && (
-        <p className="naive-apply-msg" style={{ color: "#ef5350" }}>{err}</p>
+        <p className="algo-warning">{err}</p>
       )}
 
-      <div style={{
-        display: "flex", flexWrap: "wrap", gap: 10, marginTop: 6,
-      }}>
-        <DayCostCard label="Previous day" block={cost?.previous_day}
-                     emptyMsg="no previous day yet — waiting for tick rollover" />
-        <DayCostCard label="Today"        block={cost?.today}
-                     emptyMsg="no ticks recorded yet" />
+      <div className="algo-pnl-grid">
+        <DayCostCard label="Previous day" block={cost?.previous_day} />
+        <DayCostCard label="Today" block={cost?.today} />
       </div>
 
-      <p className="naive-host-msg" style={{
-        marginTop: 6, fontSize: 11, color: "rgba(127,127,127,0.85)",
-      }}>
-        net = ∫ p_import·sell_price dt − ∫ p_export·buy_price dt.
-        Positive = paid out, negative = net earned. 1 tick = 5 s.
+      <p className="algo-panel-note">
+        Positive net cost means money paid; negative means net revenue. One tick is 5 seconds.
       </p>
-    </div>
+    </section>
   );
 }
 
 
-function DayCostCard({ label, block, emptyMsg }) {
+function DayCostCard({ label, block }) {
   const fmt  = (v, n = 2) => (typeof v === "number" ? v.toFixed(n) : "—");
   const fmtJ = (v) => (typeof v === "number" ? `${v.toFixed(1)} J` : "—");
 
-  const cardBase = {
-    flex: "1 1 240px",
-    background: "rgba(127,127,127,0.08)",
-    border: "1px solid rgba(128,128,128,0.25)",
-    borderRadius: 6, padding: "10px 14px",
-  };
-
   if (!block) {
     return (
-      <div style={cardBase}>
-        <div style={{
-          fontSize: 11, color: "rgba(127,127,127,0.85)",
-          textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2,
-        }}>{label}</div>
-        <div style={{ fontSize: 13, color: "rgba(127,127,127,0.75)", marginTop: 6 }}>
-          {emptyMsg}
+      <div className="algo-pnl-card is-empty">
+        <div className="algo-pnl-label">{label}</div>
+        <div className="algo-pnl-coverage">Azure day -</div>
+        <div className="algo-pnl-value">-</div>
+        <div className="algo-pnl-caption">No recorded data</div>
+        <div className="algo-pnl-row import">
+          <span>Import</span><span>-</span><strong>-</strong>
+        </div>
+        <div className="algo-pnl-row export">
+          <span>Export</span><span>-</span><strong>-</strong>
         </div>
       </div>
     );
@@ -883,134 +781,118 @@ function DayCostCard({ label, block, emptyMsg }) {
   const coverage = `tick ${ts}–${te}` + (isPartial ? ` (partial: ${tn}/60)` : ` (${tn}/60)`);
 
   return (
-    <div style={cardBase}>
-      <div style={{
-        fontSize: 11, color: "rgba(127,127,127,0.85)",
-        textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2,
-      }}>
-        {label} · Azure day {block.day}
-      </div>
-
-      <div style={{ fontSize: 11, color: "rgba(127,127,127,0.85)", marginBottom: 4 }}>
-        {coverage}
-      </div>
-
-      <div style={{ fontSize: 22, fontWeight: 700, color: netColor, lineHeight: 1.1 }}>
+    <div className="algo-pnl-card">
+      <div className="algo-pnl-label">{label} · Azure day {block.day}</div>
+      <div className="algo-pnl-coverage">{coverage}</div>
+      <div className="algo-pnl-value" style={{ color: netColor }}>
         {netSign}{fmt(netAbs, 2)}
       </div>
-      <div style={{ fontSize: 11, color: "rgba(127,127,127,0.85)", marginTop: 2, marginBottom: 6 }}>
+      <div className="algo-pnl-caption">
         {net > 0 ? "paid out (net)" : net < 0 ? "net earned" : "break-even"}
       </div>
-
-      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-        <tbody>
-          <tr style={{ borderTop: "1px solid rgba(128,128,128,0.2)" }}>
-            <td style={{ padding: "3px 4px", color: "#ef5350", whiteSpace: "nowrap" }}>↓ import</td>
-            <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtJ(block.import_energy_J)}</td>
-            <td style={{ padding: "3px 4px", textAlign: "right", color: "#ef5350" }}>
-              +{fmt(block.import_cost, 2)}
-            </td>
-          </tr>
-          <tr>
-            <td style={{ padding: "3px 4px", color: "#3fc380", whiteSpace: "nowrap" }}>↑ export</td>
-            <td style={{ padding: "3px 4px", textAlign: "right" }}>{fmtJ(block.export_energy_J)}</td>
-            <td style={{ padding: "3px 4px", textAlign: "right", color: "#3fc380" }}>
-              −{fmt(block.export_revenue, 2)}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div className="algo-pnl-row import">
+        <span>Import</span>
+        <span>{fmtJ(block.import_energy_J)}</span>
+        <strong>+{fmt(block.import_cost, 2)}</strong>
+      </div>
+      <div className="algo-pnl-row export">
+        <span>Export</span>
+        <span>{fmtJ(block.export_energy_J)}</span>
+        <strong>-{fmt(block.export_revenue, 2)}</strong>
+      </div>
     </div>
   );
 }
 
 
-// ---- Server-side auto-loop (runs on the backend, survives browser close) ----
-function ServerAutoLoopPanel({ apiBase }) {
+// ---- Run controls and current-run export ----
+function AlgorithmRunControls({
+  apiBase,
+  applyBusy,
+  applyMsg,
+  canTest,
+  onTest,
+  refreshToken,
+  onRefresh,
+}) {
   const [status, setStatus] = useState(null);
-  const [busy,   setBusy]   = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [toggleBusy, setToggleBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function refreshData() {
+    try {
+      const [statusRes, summaryRes] = await Promise.all([
+        fetch(`${apiBase}/algo/auto/status`),
+        fetch(`${apiBase}/export/run/summary`),
+      ]);
+      if (statusRes.ok) {
+        setStatus(await statusRes.json());
+      }
+      if (summaryRes.ok) {
+        setSummary(await summaryRes.json());
+      } else if (summaryRes.status === 404) {
+        setSummary(null);
+      }
+      setError("");
+    } catch {
+      setError("Unable to refresh algorithm status.");
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
     async function poll() {
       try {
-        const res = await fetch(`${apiBase}/algo/auto/status`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled) setStatus(data);
-      } catch {}
+        const [statusRes, summaryRes] = await Promise.all([
+          fetch(`${apiBase}/algo/auto/status`),
+          fetch(`${apiBase}/export/run/summary`),
+        ]);
+        if (cancelled) return;
+        if (statusRes.ok) setStatus(await statusRes.json());
+        if (summaryRes.ok) {
+          setSummary(await summaryRes.json());
+        } else if (summaryRes.status === 404) {
+          setSummary(null);
+        }
+      } catch {
+        if (!cancelled) setError("Unable to refresh algorithm status.");
+      }
     }
     poll();
-    const id = setInterval(poll, 2000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [apiBase]);
+    const id = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [apiBase, refreshToken]);
 
-  async function toggle() {
-    if (busy) return;
-    setBusy(true);
+  async function toggleAlgorithm() {
+    if (toggleBusy) return;
+    setToggleBusy(true);
+    setError("");
     try {
       const action = status?.running ? "stop" : "start";
-      await fetch(`${apiBase}/algo/auto/${action}`, { method: "POST" });
+      const res = await fetch(`${apiBase}/algo/auto/${action}`, { method: "POST" });
+      if (!res.ok) throw new Error(`algorithm ${action} failed: ${res.status}`);
+      await refreshData();
+      onRefresh();
+    } catch (e) {
+      setError(String(e?.message || e));
     } finally {
-      setBusy(false);
+      setToggleBusy(false);
     }
   }
 
-  const running = !!status?.running;
-  return (
-    <div className="naive-host-panel" style={{ marginTop: 12 }}>
-      <div className="naive-toolbar">
-        <strong>Server auto-loop:</strong>
-        <button className="naive-host-save" onClick={toggle} disabled={busy}>
-          {running ? "Stop" : "Start"}
-        </button>
-        <span className="naive-host-msg">
-          {running ? "running" : "stopped"}
-          {status?.last_regime && ` · last: ${status.last_regime}`}
-          {status?.applied_count != null &&
-            ` · applied=${status.applied_count} / skipped=${status.skipped_count}`}
-        </span>
-      </div>
-      {status?.last_error && (
-        <p className="naive-apply-msg" style={{ color: "#c00" }}>
-          error: {status.last_error}
-        </p>
-      )}
-    </div>
-  );
-}
-
-
-// ---- Current-run data export (downloads a zip of CSVs) ----
-// Scoped to the auto-loop's most recent /algo/auto/start, not the full DB
-// history. Re-pressing Start defines a new run; the next download covers
-// only what was logged after that.
-function DataExportPanel({ apiBase }) {
-  const [summary, setSummary] = useState(null);
-  const [busy,    setBusy]    = useState(false);
-  const [error,   setError]   = useState("");
-
-  async function refreshSummary() {
-    try {
-      const res = await fetch(`${apiBase}/export/run/summary`);
-      if (res.ok) setSummary(await res.json());
-    } catch {}
-  }
-
-  useEffect(() => {
-    refreshSummary();
-    const id = setInterval(refreshSummary, 5000);
-    return () => clearInterval(id);
-  }, [apiBase]);
-
   async function downloadZip() {
-    if (busy) return;
-    setBusy(true);
+    if (downloadBusy) return;
+    setDownloadBusy(true);
     setError("");
     try {
       const res = await fetch(`${apiBase}/export/run?format=csv`);
       if (res.status === 404) {
-        setError("Start the auto-loop first — there's no run to download yet.");
+        setError("Start the algorithm before downloading run data.");
         return;
       }
       if (!res.ok) throw new Error(`export failed: ${res.status}`);
@@ -1027,46 +909,99 @@ function DataExportPanel({ apiBase }) {
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
-      setBusy(false);
+      setDownloadBusy(false);
     }
   }
 
   const startedAt = summary?.run_started_at;
   const runActive = !!startedAt;
+  const running = !!status?.running;
   const fmt = (s) => (s?.count ?? 0) + " rows";
 
   return (
-    <div className="naive-host-panel" style={{ marginTop: 12 }}>
-      <div className="naive-toolbar">
-        <strong>Current-run export:</strong>
-        <button
-          className="naive-host-save"
-          onClick={downloadZip}
-          disabled={busy || !runActive}
-          title={runActive ? "" : "Press Start on the server auto-loop first"}
-        >
-          {busy ? "Preparing..." : "Download CSV zip (this run)"}
+    <section className="algo-run-controls">
+      <div className="algo-section-heading">
+        <div>
+          <h3>Algorithm controls</h3>
+          <p>Run continuously, test one dispatch cycle, or export the current run.</p>
+        </div>
+        <span className={`system-run-state ${running ? "running" : "stopped"}`}>
+          {running ? "Running" : "Stopped"}
+        </span>
+      </div>
+
+      <div className="algo-action-row">
+        <button className="algo-action-primary" onClick={toggleAlgorithm} disabled={toggleBusy}>
+          {toggleBusy ? "Updating..." : running ? "Stop Algorithm" : "Start Algorithm"}
         </button>
-        <button className="naive-host-toggle" onClick={refreshSummary}>
-          Refresh
+        <button
+          className="algo-action-button"
+          onClick={async () => {
+            await onTest();
+            onRefresh();
+          }}
+          disabled={applyBusy || !canTest}
+          title="Compute and dispatch one cycle using the latest available tick."
+        >
+          {applyBusy ? "Testing..." : "Test One Tick"}
+        </button>
+        <button
+          className="algo-action-button"
+          onClick={downloadZip}
+          disabled={downloadBusy || !runActive}
+          title={runActive ? "" : "Start the algorithm before exporting data."}
+        >
+          {downloadBusy ? "Preparing..." : "Download Run CSV"}
+        </button>
+        <button
+          className="algo-action-button"
+          onClick={async () => {
+            setError("");
+            await refreshData();
+            onRefresh();
+          }}
+        >
+          Refresh Data
         </button>
       </div>
-      <p className="naive-host-msg" style={{ marginTop: 6 }}>
-        {runActive ? (
-          <>
-            run started: {new Date(startedAt).toLocaleString()}
-            {summary?.run_running === false && " (stopped)"}
-            {" · "}
-            grid: {fmt(summary?.grid_snapshots)} · modules: {fmt(summary?.module_snapshots)} · decisions: {fmt(summary?.naive_decisions)}
-          </>
-        ) : (
-          "no run started yet — press Start on the server auto-loop above"
-        )}
-      </p>
+
+      <div className="algo-run-summary">
+        <div>
+          <strong>Run started</strong>
+          <span>{startedAt ? new Date(startedAt).toLocaleString() : "-"}</span>
+        </div>
+        <div>
+          <strong>Grid</strong>
+          <span>{runActive ? fmt(summary?.grid_snapshots) : "-"}</span>
+        </div>
+        <div>
+          <strong>Modules</strong>
+          <span>{runActive ? fmt(summary?.module_snapshots) : "-"}</span>
+        </div>
+        <div>
+          <strong>Decisions</strong>
+          <span>{runActive ? fmt(summary?.naive_decisions) : "-"}</span>
+        </div>
+        <div>
+          <strong>Last regime</strong>
+          <span>{status?.last_regime || "-"}</span>
+        </div>
+        <div>
+          <strong>Applied</strong>
+          <span>{status?.applied_count ?? "-"}</span>
+        </div>
+        <div>
+          <strong>Skipped</strong>
+          <span>{status?.skipped_count ?? "-"}</span>
+        </div>
+      </div>
+
+      {applyMsg && <p className="naive-apply-msg">{applyMsg}</p>}
+      {status?.last_error && <p className="algo-warning">Algorithm error: {status.last_error}</p>}
       {error && (
-        <p className="naive-apply-msg" style={{ color: "#c00" }}>{error}</p>
+        <p className="algo-warning">{error}</p>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -1184,7 +1119,7 @@ function ModulePlotCard({
               contentStyle={{
                 backgroundColor: tooltipBackground,
                 borderColor: tooltipBorder,
-                borderRadius: "8px",
+                borderRadius: "var(--radius-control)",
               }}
               labelStyle={{ color: tooltipLabel }}
             />
@@ -1244,13 +1179,7 @@ export default function SMPS({
   const [naive, setNaive] = useState(null);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyMsg, setApplyMsg] = useState("");
-  const [showHostConfig, setShowHostConfig] = useState(false);
-  const [backendHosts, setBackendHosts] = useState({ cap: "", led: "" });
   const [moduleHosts, setModuleHosts] = useState({});
-  const [hostsMsg, setHostsMsg] = useState("");
-  const [autoApply, setAutoApply] = useState(false);
-  const [cooldownSec, setCooldownSec] = useState(5);
-  const lastAutoApplyRef = useRef(0);
 
   // Algorithm registry / active-selection state.
   const [activeAlgoId, setActiveAlgoId] = useState("naive");
@@ -1273,8 +1202,7 @@ export default function SMPS({
       }
       const data = await res.json();
       setActiveAlgoId(data.active || algoId);
-      setSwitchAlgoMsg(`switched to ${data.name || algoId}`);
-      window.setTimeout(() => setSwitchAlgoMsg(""), 2500);
+      setSwitchAlgoMsg("");
     } catch (err) {
       console.error("Failed to switch algorithm", err);
       setSwitchAlgoMsg(`switch failed: ${String(err.message || err)}`);
@@ -1320,38 +1248,6 @@ export default function SMPS({
     }
   }
 
-  async function loadBackendHosts() {
-    try {
-      const res = await fetch(`${apiBase}/algo/module-hosts`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const hosts = data?.hosts || {};
-      setModuleHosts(hosts);
-      setBackendHosts({ cap: hosts.cap || "", led: hosts.led || "" });
-    } catch (err) {
-      console.error("Failed to load backend hosts", err);
-    }
-  }
-
-  async function saveBackendHosts() {
-    setHostsMsg("");
-    try {
-      const res = await fetch(`${apiBase}/algo/module-hosts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hosts: backendHosts }),
-      });
-      if (!res.ok) {
-        throw new Error(`save failed ${res.status}`);
-      }
-      setModuleHosts((current) => ({ ...current, ...backendHosts }));
-      setHostsMsg("hosts saved");
-    } catch (err) {
-      console.error("Failed to save backend hosts", err);
-      setHostsMsg("save failed");
-    }
-  }
-
   async function sendModuleCommand(role, payload) {
     try {
       const response = await fetch(`${apiBase}/modules/cmd/${role}`, {
@@ -1366,12 +1262,23 @@ export default function SMPS({
     }
   }
 
+  async function setAllModulesEnabled(enabled) {
+    await Promise.all(
+      ROLES.map((role) =>
+        sendModuleCommand(role, {
+          enable: enabled ? 1 : 0,
+          ...(role === "cap" && !enabled ? { i_cmd: 0 } : {}),
+        })
+      )
+    );
+  }
+
   useEffect(() => {
     let cancelled = false;
 
     async function poll() {
       try {
-        const [modulesRes, statusesRes, snapshotsRes, pvRes, gridRes, exportRes, naiveRes] = await Promise.all([
+        const [modulesRes, statusesRes, snapshotsRes, pvRes, gridRes, exportRes, naiveRes, hostsRes] = await Promise.all([
           fetch(`${apiBase}/modules/latest`),
           fetch(`${apiBase}/modules/status`, { cache: "no-store" }),
           fetch(`${apiBase}/snapshots?limit=${OVERVIEW_LIMIT}`),
@@ -1379,10 +1286,11 @@ export default function SMPS({
           fetch(`${apiBase}/modules/snapshots/grid?limit=${OVERVIEW_LIMIT}`),
           fetch(`${apiBase}/modules/snapshots/export?limit=${OVERVIEW_LIMIT}`),
           fetch(`${apiBase}/algo/naive`),
+          fetch(`${apiBase}/algo/module-hosts`),
         ]);
         if (!modulesRes.ok) return;
 
-        const [data, statusesData, snapshotsData, pvData, gridData, exportData, naiveData] = await Promise.all([
+        const [data, statusesData, snapshotsData, pvData, gridData, exportData, naiveData, hostsData] = await Promise.all([
           modulesRes.json(),
           statusesRes.ok ? statusesRes.json() : {},
           snapshotsRes.ok ? snapshotsRes.json() : [],
@@ -1390,6 +1298,7 @@ export default function SMPS({
           gridRes.ok ? gridRes.json() : [],
           exportRes.ok ? exportRes.json() : [],
           naiveRes.ok ? naiveRes.json() : null,
+          hostsRes.ok ? hostsRes.json() : {},
         ]);
         if (cancelled) return;
 
@@ -1402,6 +1311,7 @@ export default function SMPS({
           Array.isArray(exportData) ? exportData : [],
         ));
         setNaive(naiveData && !naiveData.error ? naiveData : null);
+        setModuleHosts(hostsData?.hosts || {});
         if (naiveData && !naiveData.error && naiveData.algo_id) {
           setActiveAlgoId(naiveData.algo_id);
         }
@@ -1423,7 +1333,6 @@ export default function SMPS({
       }
     }
 
-    loadBackendHosts();
     poll();
     const id = setInterval(poll, 2000);
     return () => {
@@ -1432,30 +1341,20 @@ export default function SMPS({
     };
   }, [apiBase]);
 
-  useEffect(() => {
-    if (!autoApply) return;
-
-    const id = setInterval(() => {
-      if (!naive || applyBusy) return;
-
-      const cooldownMs = Math.max(1, Number(cooldownSec) || 1) * 1000;
-      const now = Date.now();
-      if (now - lastAutoApplyRef.current < cooldownMs) return;
-
-      lastAutoApplyRef.current = now;
-      applyNaiveNow({ silent: true });
-    }, 1000);
-
-    return () => clearInterval(id);
-  }, [autoApply, cooldownSec, naive, applyBusy]);
-
   return (
     <div className="smps-plots-page">
       <OverviewGraphCard data={overviewData} theme={theme} />
+      {showAdvanced && (
+        <SmpsSystemAdvancedPanel
+          modules={modules}
+          history={buildGlobalTelemetryHistory(hist)}
+          theme={theme}
+          onSetAllEnabled={setAllModulesEnabled}
+        />
+      )}
       <NaiveDispatchCard
         apiBase={apiBase}
         naive={naive}
-        theme={theme}
         advanced={showAdvanced}
         activeAlgorithm={activeAlgorithm}
         autoStatus={autoStatus}
@@ -1463,16 +1362,6 @@ export default function SMPS({
         applyBusy={applyBusy}
         applyMsg={applyMsg}
         onApply={applyNaiveNow}
-        showHostConfig={showHostConfig}
-        onToggleHostConfig={() => setShowHostConfig((v) => !v)}
-        backendHosts={backendHosts}
-        onHostsChange={setBackendHosts}
-        onSaveHosts={saveBackendHosts}
-        hostsMsg={hostsMsg}
-        autoApply={autoApply}
-        onAutoApplyChange={setAutoApply}
-        cooldownSec={cooldownSec}
-        onCooldownChange={setCooldownSec}
         activeAlgoId={activeAlgoId}
         onSwitchAlgo={switchAlgorithm}
         switchingAlgo={switchingAlgo}
