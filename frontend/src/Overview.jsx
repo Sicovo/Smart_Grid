@@ -16,6 +16,11 @@ const THEME_STORAGE_KEY = "sg-theme";
 
 const MODULE_ROLES = ["pv", "grid", "export", "cap", "led"];
 
+function formatAlgorithmStatus(algorithm) {
+  const raw = String(algorithm?.id || algorithm?.name || "naive").toLowerCase();
+  return raw.includes("smart") ? "Smart" : "Naive";
+}
+
 function getModuleStatus(module, status) {
   if (!status || status.online === false) return "offline";
   if (module?.trip) return "trip";
@@ -131,6 +136,10 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
     };
   }, []);
 
+  const onlineModuleCount = MODULE_ROLES.filter(
+    (role) => getModuleStatus(modules?.[role], moduleStatuses?.[role]) === "online"
+  ).length;
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -143,12 +152,22 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
             <img src="/oct.png" alt="Octopus" className="topbar-logo-img" />
           </Link>
 
-          <nav className="topbar-nav">
-            <button className="topbar-link">Energy</button>
-            <button className="topbar-link">Heat pumps</button>
-            <button className="topbar-link">Solar & battery</button>
-            <button className="topbar-link">Electric vehicles</button>
-          </nav>
+          <div className="topbar-status" aria-label="Live system status">
+            <div className="topbar-status-item">
+              <span>Tick</span>
+              <strong>{latest?.tick ?? "-"}</strong>
+            </div>
+            <div className="topbar-status-item">
+              <span>Boards</span>
+              <strong>{onlineModuleCount}/{MODULE_ROLES.length}</strong>
+            </div>
+            <div className="topbar-status-item">
+              <span>Algorithm</span>
+              <strong className={autoStatus?.running ? "is-running" : "is-stopped"}>
+                {formatAlgorithmStatus(activeAlgorithm)}
+              </strong>
+            </div>
+          </div>
 
           <div className="topbar-spacer" />
 
@@ -170,7 +189,7 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
                 ? pollerSource.status?.completed
                   ? "Fixed complete"
                   : `Fixed ${pollerSource.status?.tick ?? 0}/59`
-                : "Use fixed data"}
+                : "Fixed Dataset"}
           </button>
 
           <button
@@ -185,6 +204,7 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
             <span>Watt's Up</span>
             <span className="topbar-avatar">W</span>
           </div>
+
         </div>
       </header>
 
@@ -195,7 +215,7 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
             className={`nav-item ${activeView === "energy" ? "active" : ""}`}
           >
             <span className="nav-icon">⌂</span>
-            <span>System Overview</span>
+            <span>Overview</span>
           </Link>
 
           <Link
@@ -303,7 +323,7 @@ function HomeContent({
   return (
     <div className="dashboard-container">
       <div>
-        <h1 className="page-title" style={{ color: cardTitleColor }}>System overview</h1>
+        <h1 className="page-title" style={{ color: cardTitleColor }}>Overview</h1>
         <p className="date-subtitle">
           Live system health, energy market data, and algorithm performance.
         </p>
@@ -316,8 +336,6 @@ function HomeContent({
         <div className="tab">Year</div>
         <div className="tab">Custom</div>
       </div>
-
-      <p className="date-subtitle">Latest Tick: {latest?.tick ?? "..."}</p>
 
       <OperationalSummary
         activeAlgorithm={activeAlgorithm}
@@ -371,7 +389,7 @@ function HomeContent({
                 contentStyle={{
                   backgroundColor: tooltipBackground,
                   borderColor: tooltipBorder,
-                  borderRadius: "8px",
+                  borderRadius: "var(--radius-control)",
                 }}
                 itemStyle={{ color: tooltipText }}
               />
@@ -399,7 +417,7 @@ function HomeContent({
                 contentStyle={{
                   backgroundColor: tooltipBackground,
                   borderColor: tooltipBorder,
-                  borderRadius: "8px",
+                  borderRadius: "var(--radius-control)",
                 }}
                 itemStyle={{ color: tooltipText }}
               />
@@ -444,9 +462,7 @@ function HomeContent({
             const totalWindow = job.end - job.start;
             const elapsed = Math.min(Math.max(now - job.start, 0), totalWindow);
             const progress = totalWindow > 0 ? (elapsed / totalWindow) * 100 : 0;
-            const remaining = Math.max(job.end - now, 0);
             const expired = now > job.end;
-            const notStarted = now < job.start;
 
             return (
               <div key={idx} className={`deferable-job ${expired ? "expired" : ""}`}>
@@ -455,13 +471,9 @@ function HomeContent({
                   <span>{Number(job.energy).toFixed(1)} J</span>
                 </div>
 
-                <div className="job-meta">
-                  tick {job.start} → {job.end} ·{" "}
-                  {expired
-                    ? "expired"
-                    : notStarted
-                      ? `starts in ${job.start - now} ticks`
-                      : `${remaining} ticks left`}
+                <div className="progress-labels">
+                  <span>Tick {job.start}</span>
+                  <span>Tick {job.end}</span>
                 </div>
 
                 <div className="progress-bg">
@@ -511,27 +523,6 @@ function HomeContent({
         </div>
       </section>
 
-      <section className="card">
-        <h2 style={{ color: cardTitleColor }}>Get your geek on</h2>
-        <p style={{ color: secondaryText, marginBottom: 20 }}>
-          Backend snapshot dataset from the local DB.
-        </p>
-
-        <div
-          style={{
-            padding: "12px",
-            background: isLightTheme ? "rgba(18,50,95,0.06)" : "rgba(255,255,255,0.05)",
-            borderRadius: "8px",
-            color: accentText,
-          }}
-        >
-          ✦ {snapshots.length} data points loaded
-        </div>
-
-        <button className="btn-pink" onClick={() => console.log(snapshots)}>
-          Log smart data
-        </button>
-      </section>
     </div>
   );
 }
@@ -611,7 +602,7 @@ function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
   );
 }
 
-function App() {
+function Overview() {
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
     return saved === "light" ? "light" : "dark";
@@ -640,4 +631,4 @@ function App() {
   );
 }
 
-export default App;
+export default Overview;
