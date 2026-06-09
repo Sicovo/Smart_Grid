@@ -45,22 +45,37 @@ def parse_ts(s: str) -> datetime:
 
 
 def load_grid_prices(run_dir: Path):
-    """Return sorted list of (timestamp, sell_price) from grid_snapshots.csv."""
-    rows = []
+    """Return sorted list of (timestamp, sell_price) for the FIXED-SCENARIO
+    Azure day only.
+
+    Each lab run actually spans two Azure days: a few tail ticks of the
+    live feed before the fixed shim activated, then 60 ticks of the
+    scripted scenario. The dashboard's /algo/run/cost endpoint reports
+    the last-seen day (the 60-tick fixed day) as `today` and the leftover
+    as `previous_day`. We want only `today` so the bar-chart totals match
+    the cost table."""
+    by_day = {}
     with (run_dir / "grid_snapshots.csv").open("r", encoding="utf-8", newline="") as fh:
         for r in csv.DictReader(fh):
             try:
-                ts = parse_ts(r["timestamp"])
-                sp = float(r["sell_price"])
+                day = int(r["day"])
+                ts  = parse_ts(r["timestamp"])
+                sp  = float(r["sell_price"])
             except (KeyError, TypeError, ValueError):
                 continue
-            rows.append((ts, sp))
-    rows.sort(key=lambda x: x[0])
-    return rows
+            by_day.setdefault(day, []).append((ts, sp))
+    if not by_day:
+        return []
+    target_day = max(by_day.keys(), key=lambda d: len(by_day[d]))
+    return sorted(by_day[target_day], key=lambda x: x[0])
 
 
-def load_module(run_dir: Path, role: str, power_field: str):
-    """Return sorted list of (timestamp, p_W) for one module role."""
+def load_module(run_dir: Path, role: str, power_field: str, window=None):
+    """Return sorted list of (timestamp, p_W) for one module role,
+    optionally windowed to [t_start, t_end]. Windowing matches the
+    backend's _day_cost_block which restricts module samples to the
+    timeframe covered by grid_snapshots — i.e. only ticks the algorithm
+    actually saw, dropping warm-up and cool-down."""
     rows = []
     with (run_dir / "module_snapshots.csv").open("r", encoding="utf-8", newline="") as fh:
         for r in csv.DictReader(fh):
@@ -71,6 +86,10 @@ def load_module(run_dir: Path, role: str, power_field: str):
                 p  = float(r[power_field] or 0.0)
             except (KeyError, TypeError, ValueError):
                 continue
+            if window is not None:
+                t_start, t_end = window
+                if t_start is not None and not (t_start <= ts <= t_end):
+                    continue
             if p < 0:
                 p = 0.0
             rows.append((ts, p))
@@ -81,9 +100,13 @@ def load_module(run_dir: Path, role: str, power_field: str):
 def import_J_by_band(run_dir: Path, max_dt_s: float = 30.0):
     """Trapezoidal integration of grid p_import, bucketed by the sell_price
     in effect at the earlier sample of each interval. Mirrors
-    backend.main._bus_cost_integrate."""
-    grid_rows = load_module(run_dir, "grid", "p_import")
+    backend.main._bus_cost_integrate + _day_cost_block."""
     price_rows = load_grid_prices(run_dir)
+    if price_rows:
+        window = (price_rows[0][0], price_rows[-1][0])
+    else:
+        window = None
+    grid_rows = load_module(run_dir, "grid", "p_import", window=window)
     if not grid_rows or not price_rows:
         return np.zeros(len(BAND_EDGES) - 1)
 

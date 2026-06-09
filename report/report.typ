@@ -616,7 +616,7 @@ A soft-start grace prevents the undervolt trip. When the system starts up with j
 
 == Evaluation & Optimisation
 
-The Export and Import SMPS share a buck topology and a bench characterisation methodology but play opposite roles in the dual-meter scoring framework of Section 2.3. Export sits between the bus and the dummy resistor: the lecturer's bus meter credits the pre-loss bus value while the dashboard reports the post-loss dissipation, so the dispatch algorithm under-reports export revenue by the conversion loss and operates on slightly off-optimum numbers (Section 6.3.2 covers the same effect on the LED path; the proper fix in both cases is a current sensor between the bus and the SMPS). Maximising $eta_("export")$ is the available mitigation. Import is the inverse: the PSU reading is the billed quantity, so every percent of conversion loss inflates the effective import price per delivered bus Wh directly. The two sweeps are presented in that order.
+The Export and Import SMPS share a buck topology and a bench characterisation methodology but play opposite roles in the dual-meter scoring framework of Section 2.3. Export sits between the bus and the dummy resistor: the lecturer's bus meter credits the pre-loss bus value while the dashboard reports the post-loss dissipation, so the dispatch algorithm under-reports export revenue by the conversion loss and operates on slightly off-optimum numbers (Section 6.3.2 covers the same effect on the LED path; the proper fix in both cases is a current sensor between the bus and the SMPS). Maximising $eta_("export")$ is the available mitigation. Import is the inverse: the PSU reading is the billed quantity, so every 1% of conversion loss inflates the effective import price per delivered bus Wh directly. The two sweeps are presented in that order.
 
 === Measured Export Efficiency
 
@@ -861,7 +861,7 @@ As a final redundancy, a single-file dashboard is bundled into the firmware file
 // ----- 9. Algorithm Software (~1000 words) -------------------
 = Algorithm Software
 
-The per-module loops of Sections 3 to 6 keep the bus stable; this section covers the coordinator that decides what each module should be doing. Two policies share the same framework: a reactive naive baseline that the brief asks the smart policy to beat, and a forecast-aware Smart V1 that schedules deferrable loads into cheap ticks and arbitrages the supercapacitor against the evening price spike. Both are evaluated on the same rig under the same scripted day, and the smart policy delivers a 20.5 percent net-cost saving averaged across two lab runs.
+The per-module loops of Sections 3 to 6 keep the bus stable; this section covers the coordinator that decides what each module should be doing. Two policies share the same framework: a reactive naive baseline that the brief asks the smart policy to beat, and a forecast-aware Smart V1 that schedules deferrable loads into cheap ticks and arbitrages the supercapacitor against the evening price spike. Both are evaluated on the same grid under the same scripted day, and the smart policy delivers a 20% net-cost saving averaged across two lab runs.
 
 == Coordinator Loop and Economic Objective
 
@@ -877,13 +877,13 @@ with $P_("PSU")(t) = P_("import,bus")(t) / eta_("import")(V_("bus"), I_L)$ coupl
 
 Each policy exposes a pure `decide(state: GridState) -> Commands` function and is registered with an in-process registry; the operator switches the active policy at runtime from the dashboard and the choice is persisted to disk. `GridState` carries the Azure tick, base demand, PV panel power, bus voltage from the supercapacitor module, supercapacitor terminal voltage, the live current-tick prices and the full deferrable list. `Commands` carries the four actuator payloads plus a diagnostics block (regime, PV derate, effective load, net imbalance, supercapacitor headroom, per-deferrable rates) that the dashboard renders for whichever policy is active. Adding a policy is a register call plus one module.
 
-One detail makes the live path produce the right answer: the Azure feed republishes each deferrable's full original energy at every tick of its window, so a policy that treats `d.energy` as remaining joules would re-allocate the same load over and over. A small served-tracker module accumulates the bus-side energy actually dispatched per deferrable, credits only after a successful LED command (a dropped command does not bank served energy), and subtracts the running total from `d.energy` before the policy sees it. Without the tracker the LED was over-driven by 233 J on a 615 J target, a 38 percent over-dissipation; with it, the commanded LED energy lands within 7 J of target on both naive runs and within 41 J on the smart runs, where the residual falls out as export (the LED clamp at 9 W spills surplus into the bus).
+One detail makes the live path produce the right answer: the Azure feed republishes each deferrable's full original energy at every tick of its window, so a policy that treats `d.energy` as remaining joules would re-allocate the same load over and over. A small served-tracker module accumulates the bus-side energy actually dispatched per deferrable, credits only after a successful LED command (a dropped command does not bank served energy), and subtracts the running total from `d.energy` before the policy sees it. Without the tracker the LED was over-driven by 233 J on a 615 J target, a 38% over-dissipation; with it, the commanded LED energy lands within 7 J of target on both naive runs and within 41 J on the smart runs, where the residual falls out as export (the LED clamp at 9 W spills surplus into the bus).
 
 == Naive Baseline
 
-The naive policy is a five-step reactive symmetric-droop rule. PV is first derated to bus side by a conservative $eta_("PV") = 0.90$ (the measured value in Section 3.3 is 96 to 98 percent, so the bias keeps the algorithm on the surplus side of modelling error). Active deferrables are then spread linearly across their remaining real-time window so the per-tick rate is $E_("remaining")/(5 dot N_("ticks remaining"))$ watts, with adaptive catch-up baked in: under-serving last tick raises the next tick's rate. Effective load is base demand plus the sum of those rates and is commanded to the LED Load, split three ways across red, yellow and green channels with each firmware-clamped to 3 W. The net imbalance $P_("net") = P_("PV,bus") - P_("load,eff")$ is then offered to the supercapacitor through a 1 W deadband (noise floor of the bus), with charge current $P_("net")/V_("bus")$ clamped to 0.6 A and refused above 15.7 V, discharge current $|P_("net")|/(V_("bus") dot eta_("cap"))$ refused below 10.5 V and linearly tapered through the 10.5 to 11 V firmware soft region. Anything the supercapacitor cannot absorb spills to droop: the grid and export modules sit permanently enabled at 9.9 V and 10.1 V respectively and passively make up the residual.
+The naive policy is a five-step reactive symmetric-droop rule. PV is first derated to bus side by a conservative $eta_("PV") = 0.90$ (the measured value in Section 3.3 is 96 to 98%, so the bias keeps the algorithm on the surplus side of modelling error). Active deferrables are then spread linearly across their remaining real-time window so the per-tick rate is $E_("remaining")/(5 dot N_("ticks remaining"))$ watts, with adaptive catch-up baked in: under-serving last tick raises the next tick's rate. Effective load is base demand plus the sum of those rates and is commanded to the LED Load, split three ways across red, yellow and green channels with each firmware-clamped to 3 W. The net imbalance $P_("net") = P_("PV,bus") - P_("load,eff")$ is then offered to the supercapacitor through a 1 W deadband (noise floor of the bus), with charge current $P_("net")/V_("bus")$ clamped to 0.6 A and refused above 15.7 V, discharge current $|P_("net")|/(V_("bus") dot eta_("cap"))$ refused below 10.5 V and linearly tapered through the 10.5 to 11 V firmware soft region. Anything the supercapacitor cannot absorb spills to droop: the grid and export modules sit permanently enabled at 9.9 V and 10.1 V respectively and passively make up the residual.
 
-@fig:algo_naive_trace shows the naive policy across one Azure day on the rig. The cap power panel is small and twitchy, charging only when noise pushes the bus above the deadband; the grid panel does almost all of the work, importing through the morning, evening and night and exporting only the small midday surplus that the cap could not absorb.
+@fig:algo_naive_trace shows the naive policy across one Azure day on the grid. The cap power panel is small and twitchy, charging only when noise pushes the bus above the deadband; the grid panel does almost all of the work, importing through the morning, evening and night and exporting only the small midday surplus that the cap could not absorb.
 
 #figure(
   image("images/algo_naive_trace.png", width: 88%),
@@ -894,7 +894,7 @@ The naive policy is a five-step reactive symmetric-droop rule. PV is first derat
 
 Smart V1 keeps every safety guard of the naive policy (LED clamp, supercapacitor taper, 0.6 A clamp, deadband, discharge-side $eta_("cap")$ compensation) and replaces two of its reactive steps with forecast-aware ones. The forecast itself is closed-form: the Azure simulation has a deterministic mean (sun follows a sine over ticks 15 to 45, base demand follows a piecewise-linear envelope, sell price = max(10, 10 + base $-$ sun)), with Gaussian noise on top. Smart V1 evaluates that mean per tick rather than fitting historical data.
 
-The first replacement is the deferrable scheduler. Instead of smearing each deferrable across its window, future ticks are ranked by marginal cost-to-serve: a tick in forecast PV surplus costs $p_("buy")$ (the foregone export revenue), a tick in deficit costs $p_("sell")$ (the imported energy). The scheduler greedy-fills the cheapest ticks first, respecting the LED's 9 W per-tick capacity and giving the tightest-deadline deferrable first pick. The second replacement is the supercapacitor dispatcher. At every tick it compares the current sell price against the best leakage-discounted future sell price across the rest of the day, using a piecewise leakage model fitted to Section 4.3.4 (a 12 percent dielectric step over the first minute, then 0.25 percent per Azure tick). It emits one of six actions: end-of-day drain past tick 55, arbitrage discharge when now beats the best future by more than 20 ¢/J, arbitrage charge when forecast yield clears charging cost by the same margin, an empty-cap refill rule that lowers the import bar when a forecast peak is within eight ticks, and a fall-back passive rule that mirrors the naive deadband when no arbitrage triggers fire. Two pre-peak guards (refuse passive discharge below 70 ¢/J after tick 42, and a fixed price floor instead of forecast comparison) were added after a lab trace showed the supercapacitor being drained at moderate prices and arriving empty at the real evening peak.
+The first replacement is the deferrable scheduler. Instead of smearing each deferrable across its window, future ticks are ranked by marginal cost-to-serve: a tick in forecast PV surplus costs $p_("buy")$ (the foregone export revenue), a tick in deficit costs $p_("sell")$ (the imported energy). The scheduler greedy-fills the cheapest ticks first, respecting the LED's 9 W per-tick capacity and giving the tightest-deadline deferrable first pick. The second replacement is the supercapacitor dispatcher. At every tick it compares the current sell price against the best leakage-discounted future sell price across the rest of the day, using a piecewise leakage model fitted to Section 4.3.4 (a 12% dielectric step over the first minute, then 0.25% per Azure tick). It emits one of six actions: end-of-day drain past tick 55, arbitrage discharge when now beats the best future by more than 20 ¢/J, arbitrage charge when forecast yield clears charging cost by the same margin, an empty-cap refill rule that lowers the import bar when a forecast peak is within eight ticks, and a fall-back passive rule that mirrors the naive deadband when no arbitrage triggers fire. Two pre-peak guards (refuse passive discharge below 70 ¢/J after tick 42, and a fixed price floor instead of forecast comparison) were added after a lab trace showed the supercapacitor being drained at moderate prices and arriving empty at the real evening peak.
 
 @fig:algo_smart_trace shows the smart policy on the same day. The supercapacitor panel now has a large midday charge burst (ticks 24 to 32, where PV surplus and cheap prices coincide) and an evening discharge burst (ticks 45 to 50, where the sell price clears 100 ¢/J). The grid panel imports most of its energy in the cheap morning and exports the midday surplus that exceeds the LED clamp.
 
@@ -905,25 +905,34 @@ The first replacement is the deferrable scheduler. Instead of smearing each defe
 
 == Evaluation
 
-Each policy was run on the rig against the same fixed price, demand and irradiance profile (514 J base demand, 100.6 J of deferrables, 615 J LED target). Net cost integrates the grid module's `p_import` and the export module's `p_dissip` trapezoidally over every consecutive sample pair, multiplied by the sell or buy price in effect at the earlier timestamp; sample gaps longer than 30 s are skipped. The same integrator drives the `/algo/run/cost` endpoint the dashboard renders during a run, so the numbers in @tbl:algo_cost are directly comparable to a live P&L card.
+Each policy was run on the grid against the same fixed price, demand and irradiance profile (514 J base demand, 100.6 J of deferrables, 615 J LED target). Net cost integrates the grid module's `p_import` and the export module's `p_dissip` trapezoidally over every consecutive sample pair, multiplied by the sell or buy price in effect at the earlier timestamp; sample gaps longer than 30 s are skipped. The same integrator drives the `/algo/run/cost` endpoint the dashboard renders during a run, so the numbers in @tbl:algo_cost are directly comparable to a live P&L card.
 
 #protable(
-  caption: [V4 lab cost summary (cents). Smart V1 saves 20.5 percent on average.],
+  caption: [V4 lab cost summary (cents). Smart V1 saves 20% on average.],
   columns: (1.5fr, 1fr, 1fr, 1fr, 1fr),
   align: (left + horizon, center + horizon, center + horizon, center + horizon, center + horizon),
   [*Run*], [*Import (¢)*], [*Export (¢)*], [*Net (¢)*], [*Saving vs naive*],
-  [Naive, test 1], [35{,}191], [70],  [35{,}121], [baseline],
-  [Naive, test 2], [33{,}493], [63],  [33{,}430], [baseline],
-  [Smart, test 1], [27{,}863], [450], [27{,}413], [22.0 percent],
-  [Smart, test 2], [27{,}447], [384], [27{,}064], [19.0 percent],
+  [Naive, test 1], [34,789], [70],  [34,719], [baseline],
+  [Naive, test 2], [33,493], [63],  [33,430], [baseline],
+  [Smart, test 1], [27,863], [450], [27,413], [21.0%],
+  [Smart, test 2], [27,447], [384], [27,064], [19.0%],
 ) <tbl:algo_cost>
 
-@fig:algo_price_band attributes the saving to where each policy spent its import allowance. Smart V1 imports roughly three times as much energy in the cheapest band (below 30 ¢/J) and correspondingly less in the 30 to 70 ¢/J middle band, which is where the naive policy is forced to draw whenever the bus sags. The supercapacitor cycles about twice as hard under smart (122 J charged, 80 J discharged versus 54 J and 48 J under naive) and exports about four times as much (37 J versus 8 J), the spillover being PV surplus that exceeds the 9 W LED clamp on peak midday ticks. The dominant lever is therefore temporal arbitrage on the supercapacitor: the cheap-band imports park energy that displaces 30 to 100 ¢/J imports later in the day.
+@fig:algo_price_band attributes the saving to where each policy spent its import allowance. Smart V1 imports roughly 3.6 times as much energy in the cheapest band (below 30 ¢/J) and correspondingly less in the 30 to 100 ¢/J middle bands, which is where the naive policy is forced to draw whenever the bus sags. Total imported energy is almost the same across both policies (476 J for smart versus 463 J for naive, averaged across the two paired tests): the saving comes from when the energy is bought, not how much. The supercapacitor cycles about 2.2 times as hard under smart (120 J charged, 98 J discharged on average, versus 54 J and 49 J under naive) and the grid exports about five times as much (36 J versus 7 J on average), the export being PV surplus that exceeds the 9 W LED clamp on peak midday ticks while the supercapacitor is also fully charging. The dominant lever is therefore temporal arbitrage on the supercapacitor: cheap-band imports park energy in the cap, which is then discharged later to displace what would otherwise be 70 to 100 ¢/J imports.
 
 #figure(
   image("images/algo_price_band.png", width: 92%),
   caption: [Imported energy by sell-price band: smart shifts imports into the cheap band.],
 ) <fig:algo_price_band>
+
+== Auxiliary Power Overhead
+
+#figure(
+  image("images/usb_power_tester.png", width: 55%),
+  caption: [USB inline meter: a single Pico W draws 0.262 W on its 5 V rail.],
+) <fig:usb_power_tester>
+
+The five Pico W controllers run from a separate USB powered hub, unmetered by the algorithm. A USB inline meter reads 0.262 W per module (@fig:usb_power_tester), so the aggregate fixed draw is 1.31 W or 393 J per 300 s Azure day. Total energy throughput across the grid (PV panel-side, supercapacitor charge and discharge, grid import and export, LED dissipation) averaged 1724 J per day, or 5.75 W. The controllers therefore account for $1.31 / (1.31 + 5.75) approx 19%$ of total grid power. However, we note that this is a fixed cost: with a small-scale grid it is highly inefficient, but with a larger supercapacitor, higher demand, it can improve the efficiency.
 
 #pagebreak()
 
@@ -986,7 +995,7 @@ Two derived system-level checks are also reported. First, the steady-state bus v
 
 $ E_("PV,bus") + E_("import,bus") = E_("export,bus") + E_("LED,bus") + E_("supercap,bus") + E_("losses,bus") $
 
-The unmodelled $E_("losses,bus")$ residual captures bus-wire $I^2 R$ and any uncharacterised dissipation. It should be small (a few percent at most) if the per-module post-loss measurements are consistent. A large residual on a closure check is treated as a regression signal for the per-module efficiency numbers.
+The unmodelled $E_("losses,bus")$ residual captures bus-wire $I^2 R$ and any uncharacterised dissipation. It should be small (a few % at most) if the per-module post-loss measurements are consistent. A large residual on a closure check is treated as a regression signal for the per-module efficiency numbers.
 
 == Requirements Verification Matrix
 
