@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
+import { ModuleAdvancedPanel } from "./SmpsModules";
 
 const ROLES = ["pv", "grid", "export", "cap", "led"];
+const ROLE_COLUMNS = [
+  ["pv", "export", "led"],
+  ["grid", "cap"],
+];
 const HIST_MAX = 60;
 const OVERVIEW_LIMIT = 60;
-const STALE_AFTER_MS = 5000;
 const TICK_SECONDS = 5;
 
 const ROLE_LABELS = {
@@ -53,18 +57,21 @@ const ROLE_LINES = {
   ],
 };
 
-function getModuleStatus(module) {
-  if (!module) return "offline";
-
-  const t = new Date(module.timestamp).getTime();
-  if (!Number.isFinite(t)) return "offline";
-
-  if (Date.now() - t > STALE_AFTER_MS) return "stale";
-  if (module.trip) return "trip";
-  if (module.wd) return "watchdog";
-  if (!module.enable) return "disabled";
+function getModuleStatus(module, status) {
+  if (!status || status.online === false) return "offline";
+  if (module?.trip) return "trip";
+  if (module?.wd) return "watchdog";
+  if (module && module.enable === false) return "disabled";
 
   return "online";
+}
+
+function getBusVoltage(modules) {
+  for (const role of ["grid", "export", "pv", "cap"]) {
+    const value = modules?.[role]?.vb_bus;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
 }
 
 function fmt(v, digits = 2) {
@@ -393,6 +400,10 @@ function NaiveDispatchCard({
   apiBase,
   naive,
   theme = "dark",
+  advanced = false,
+  activeAlgorithm,
+  autoStatus,
+  runCost,
   applyBusy,
   applyMsg,
   onApply,
@@ -411,92 +422,154 @@ function NaiveDispatchCard({
   switchingAlgo,
   switchAlgoMsg,
 }) {
-  const algoLabel = naive?.algo_name || naive?.diagnostics?.algo_id || activeAlgoId || "—";
+  const algoLabel =
+    activeAlgorithm?.name ||
+    naive?.algo_name ||
+    naive?.diagnostics?.algo_id ||
+    activeAlgoId ||
+    "—";
+  const diagnostics = naive?.diagnostics || {};
+  const regime = diagnostics.regime || naive?.regime || "—";
+  const todayCost = runCost?.today;
+  const netCost = todayCost?.net_cost;
   return (
-    <section className="card smps-plot-card smps-overview-card">
+    <section className="card smps-plot-card smps-overview-card smps-algorithm-card">
       <div className="card-header">
         <span className="icon-green">●</span> Algorithm Dispatch
         <span style={{ marginLeft: 8, fontSize: 12, color: "rgba(127,127,127,0.85)", fontWeight: 400 }}>
           · {algoLabel}
         </span>
+        <span
+          className={`system-run-state ${autoStatus?.running ? "running" : "stopped"}`}
+          style={{ marginLeft: "auto" }}
+        >
+          {autoStatus?.running ? "Running" : "Stopped"}
+        </span>
       </div>
 
-      <AlgorithmTabs
-        apiBase={apiBase}
-        activeId={activeAlgoId}
-        onSwitch={onSwitchAlgo}
-        switching={switchingAlgo}
-        switchMsg={switchAlgoMsg}
-      />
-
-      <NaiveDebugPanel naive={naive} theme={theme} />
-
-      <AlgoExtrasPanel naive={naive} />
-
-      <div className="naive-toolbar">
-        <label className="naive-auto-label">
-          <input
-            type="checkbox"
-            checked={autoApply}
-            onChange={(e) => onAutoApplyChange(e.target.checked)}
-          />
-          Auto apply
-        </label>
-
-        <label className="naive-auto-label">
-          Cooldown
-          <input
-            className="naive-cooldown-input"
-            type="number"
-            min="1"
-            step="1"
-            value={cooldownSec}
-            onChange={(e) => onCooldownChange(Number(e.target.value) || 1)}
-          />
-          s
-        </label>
-
-        <button className="naive-host-toggle" onClick={onToggleHostConfig}>
-          {showHostConfig ? "Hide backend hosts" : "Edit backend hosts"}
-        </button>
+      <div className="algorithm-compact-grid algorithm-compact-grid-wide">
+        <div>
+          <span>Regime</span>
+          <strong>{regime}</strong>
+        </div>
+        <div>
+          <span>Tick</span>
+          <strong>{naive?.tick ?? "—"}</strong>
+        </div>
+        <div>
+          <span>Net balance</span>
+          <strong>
+            {typeof diagnostics.net_W === "number"
+              ? `${diagnostics.net_W.toFixed(2)} W`
+            : "—"}
+          </strong>
+        </div>
+        <div>
+          <span>Import cost</span>
+          <strong>
+            {typeof todayCost?.import_cost === "number"
+              ? todayCost.import_cost.toFixed(2)
+              : "—"}
+          </strong>
+        </div>
+        <div>
+          <span>Export revenue</span>
+          <strong>
+            {typeof todayCost?.export_revenue === "number"
+              ? todayCost.export_revenue.toFixed(2)
+              : "—"}
+          </strong>
+        </div>
+        <div>
+          <span>Net cost</span>
+          <strong className={typeof netCost === "number" && netCost < 0 ? "cost-positive" : "cost-negative"}>
+            {typeof netCost === "number" ? netCost.toFixed(2) : "—"}
+          </strong>
+        </div>
       </div>
 
-      {showHostConfig && (
-        <div className="naive-host-panel">
-          <div className="naive-host-grid">
-            <label>
-              cap
+      {advanced && (
+        <div className="algorithm-inline-advanced">
+          <AlgorithmTabs
+            apiBase={apiBase}
+            activeId={activeAlgoId}
+            onSwitch={onSwitchAlgo}
+            switching={switchingAlgo}
+            switchMsg={switchAlgoMsg}
+          />
+
+          <NaiveDebugPanel naive={naive} theme={theme} />
+
+          <AlgoExtrasPanel naive={naive} />
+
+          <div className="naive-toolbar">
+            <label className="naive-auto-label">
               <input
-                value={backendHosts.cap}
-                onChange={(e) => onHostsChange({ ...backendHosts, cap: e.target.value })}
-                placeholder="http://192.168.137.23"
+                type="checkbox"
+                checked={autoApply}
+                onChange={(e) => onAutoApplyChange(e.target.checked)}
               />
+              Auto apply
             </label>
-            <label>
-              led
+
+            <label className="naive-auto-label">
+              Cooldown
               <input
-                value={backendHosts.led}
-                onChange={(e) => onHostsChange({ ...backendHosts, led: e.target.value })}
-                placeholder="http://192.168.137.24"
+                className="naive-cooldown-input"
+                type="number"
+                min="1"
+                step="1"
+                value={cooldownSec}
+                onChange={(e) => onCooldownChange(Number(e.target.value) || 1)}
               />
+              s
             </label>
+
+            <button className="naive-host-toggle" onClick={onToggleHostConfig}>
+              {showHostConfig ? "Hide backend hosts" : "Edit backend hosts"}
+            </button>
           </div>
-          <div className="naive-host-actions">
-            <button className="naive-host-save" onClick={onSaveHosts}>Save backend hosts</button>
-            {hostsMsg && <span className="naive-host-msg">{hostsMsg}</span>}
-          </div>
+
+          {showHostConfig && (
+            <div className="naive-host-panel">
+              <div className="naive-host-grid">
+                <label>
+                  cap
+                  <input
+                    value={backendHosts.cap}
+                    onChange={(e) => onHostsChange({ ...backendHosts, cap: e.target.value })}
+                    placeholder="http://192.168.137.23"
+                  />
+                </label>
+                <label>
+                  led
+                  <input
+                    value={backendHosts.led}
+                    onChange={(e) => onHostsChange({ ...backendHosts, led: e.target.value })}
+                    placeholder="http://192.168.137.24"
+                  />
+                </label>
+              </div>
+              <div className="naive-host-actions">
+                <button className="naive-host-save" onClick={onSaveHosts}>
+                  Save backend hosts
+                </button>
+                {hostsMsg && <span className="naive-host-msg">{hostsMsg}</span>}
+              </div>
+            </div>
+          )}
+
+          <button className="btn-pink" onClick={() => onApply()} disabled={applyBusy || !naive}>
+            {applyBusy ? "Applying..." : "Apply to all 4 modules (cap, led, grid, export)"}
+          </button>
+
+          {applyMsg && <p className="naive-apply-msg">{applyMsg}</p>}
+
+          <RunCostPanel apiBase={apiBase} />
+          <ServerAutoLoopPanel apiBase={apiBase} />
+          <DataExportPanel apiBase={apiBase} />
         </div>
       )}
-
-      <button className="btn-pink" onClick={() => onApply()} disabled={applyBusy || !naive}>
-        {applyBusy ? "Applying..." : "Apply to all 4 modules (cap, led, grid, export)"}
-      </button>
-
-      {applyMsg && <p className="naive-apply-msg">{applyMsg}</p>}
-
-      <RunCostPanel       apiBase={apiBase} />
-      <ServerAutoLoopPanel apiBase={apiBase} />
-      <DataExportPanel    apiBase={apiBase} />
     </section>
   );
 }
@@ -997,8 +1070,18 @@ function DataExportPanel({ apiBase }) {
   );
 }
 
-function ModulePlotCard({ role, data, history, theme = "dark" }) {
-  const status = getModuleStatus(data);
+function ModulePlotCard({
+  role,
+  data,
+  status: moduleStatus,
+  history,
+  theme = "dark",
+  advanced = false,
+  host = "",
+  onCmd,
+  lastBusVoltage,
+}) {
+  const status = getModuleStatus(data, moduleStatus);
   const isLightTheme = theme === "light";
   const color = isLightTheme
     ? {
@@ -1130,12 +1213,31 @@ function ModulePlotCard({ role, data, history, theme = "dark" }) {
           </span>
         ))}
       </div>
+
+      {advanced && (
+        <ModuleAdvancedPanel
+          role={role}
+          data={data}
+          status={moduleStatus}
+          host={host}
+          onCmd={onCmd}
+          lastBusVoltage={lastBusVoltage}
+        />
+      )}
     </section>
   );
 }
 
-export default function SmpsModules({ apiBase, theme = "dark" }) {
+export default function SMPS({
+  apiBase,
+  theme = "dark",
+  showAdvanced = false,
+  activeAlgorithm,
+  autoStatus,
+  runCost,
+}) {
   const [modules, setModules] = useState({});
+  const [statuses, setStatuses] = useState({});
   const histRef = useRef(Object.fromEntries(ROLES.map((r) => [r, []])));
   const [hist, setHist] = useState(Object.fromEntries(ROLES.map((r) => [r, []])));
   const [overviewData, setOverviewData] = useState([]);
@@ -1144,6 +1246,7 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
   const [applyMsg, setApplyMsg] = useState("");
   const [showHostConfig, setShowHostConfig] = useState(false);
   const [backendHosts, setBackendHosts] = useState({ cap: "", led: "" });
+  const [moduleHosts, setModuleHosts] = useState({});
   const [hostsMsg, setHostsMsg] = useState("");
   const [autoApply, setAutoApply] = useState(false);
   const [cooldownSec, setCooldownSec] = useState(5);
@@ -1223,6 +1326,7 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
       if (!res.ok) return;
       const data = await res.json();
       const hosts = data?.hosts || {};
+      setModuleHosts(hosts);
       setBackendHosts({ cap: hosts.cap || "", led: hosts.led || "" });
     } catch (err) {
       console.error("Failed to load backend hosts", err);
@@ -1240,10 +1344,25 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
       if (!res.ok) {
         throw new Error(`save failed ${res.status}`);
       }
+      setModuleHosts((current) => ({ ...current, ...backendHosts }));
       setHostsMsg("hosts saved");
     } catch (err) {
       console.error("Failed to save backend hosts", err);
       setHostsMsg("save failed");
+    }
+  }
+
+  async function sendModuleCommand(role, payload) {
+    try {
+      const response = await fetch(`${apiBase}/modules/cmd/${role}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return response.ok;
+    } catch (err) {
+      console.error(`Failed to send ${role} command`, err);
+      return false;
     }
   }
 
@@ -1252,8 +1371,9 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
 
     async function poll() {
       try {
-        const [modulesRes, snapshotsRes, pvRes, gridRes, exportRes, naiveRes] = await Promise.all([
+        const [modulesRes, statusesRes, snapshotsRes, pvRes, gridRes, exportRes, naiveRes] = await Promise.all([
           fetch(`${apiBase}/modules/latest`),
+          fetch(`${apiBase}/modules/status`, { cache: "no-store" }),
           fetch(`${apiBase}/snapshots?limit=${OVERVIEW_LIMIT}`),
           fetch(`${apiBase}/modules/snapshots/pv?limit=${OVERVIEW_LIMIT}`),
           fetch(`${apiBase}/modules/snapshots/grid?limit=${OVERVIEW_LIMIT}`),
@@ -1262,8 +1382,9 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
         ]);
         if (!modulesRes.ok) return;
 
-        const [data, snapshotsData, pvData, gridData, exportData, naiveData] = await Promise.all([
+        const [data, statusesData, snapshotsData, pvData, gridData, exportData, naiveData] = await Promise.all([
           modulesRes.json(),
+          statusesRes.ok ? statusesRes.json() : {},
           snapshotsRes.ok ? snapshotsRes.json() : [],
           pvRes.ok ? pvRes.json() : [],
           gridRes.ok ? gridRes.json() : [],
@@ -1273,6 +1394,7 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
         if (cancelled) return;
 
         setModules(data || {});
+        setStatuses(statusesData || {});
         setOverviewData(buildOverviewSeries(
           Array.isArray(snapshotsData) ? snapshotsData : [],
           Array.isArray(pvData) ? pvData : [],
@@ -1334,6 +1456,10 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
         apiBase={apiBase}
         naive={naive}
         theme={theme}
+        advanced={showAdvanced}
+        activeAlgorithm={activeAlgorithm}
+        autoStatus={autoStatus}
+        runCost={runCost}
         applyBusy={applyBusy}
         applyMsg={applyMsg}
         onApply={applyNaiveNow}
@@ -1352,15 +1478,26 @@ export default function SmpsModules({ apiBase, theme = "dark" }) {
         switchingAlgo={switchingAlgo}
         switchAlgoMsg={switchAlgoMsg}
       />
-      {ROLES.map((role) => (
-        <ModulePlotCard
-          key={role}
-          role={role}
-          data={modules?.[role]}
-          history={hist[role]}
-          theme={theme}
-        />
-      ))}
+      <div className="smps-plot-columns">
+        {ROLE_COLUMNS.map((roles, columnIndex) => (
+          <div className="smps-plot-column" key={columnIndex}>
+            {roles.map((role) => (
+              <ModulePlotCard
+                key={role}
+                role={role}
+                data={modules?.[role]}
+                status={statuses?.[role]}
+                history={hist[role]}
+                theme={theme}
+                advanced={showAdvanced}
+                host={moduleHosts?.[role]}
+                onCmd={(payload) => sendModuleCommand(role, payload)}
+                lastBusVoltage={getBusVoltage(modules)}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Link } from "react-router-dom";
+import { Routes, Route, Link, Navigate } from "react-router-dom";
 import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import {
   XAxis,
@@ -8,7 +8,6 @@ import {
   BarChart,
   Bar,
 } from "recharts";
-import SmpsModules from "./SmpsModules";
 import SMPS from "./SMPS";
 import "./App.css";
 
@@ -16,18 +15,12 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const THEME_STORAGE_KEY = "sg-theme";
 
 const MODULE_ROLES = ["pv", "grid", "export", "cap", "led"];
-const STALE_AFTER_MS = 5000;
 
-function getModuleStatus(module) {
-  if (!module) return "offline";
-
-  const t = new Date(module.timestamp).getTime();
-  if (!Number.isFinite(t)) return "offline";
-
-  if (Date.now() - t > STALE_AFTER_MS) return "stale";
-  if (module.trip) return "trip";
-  if (module.wd) return "watchdog";
-  if (!module.enable) return "disabled";
+function getModuleStatus(module, status) {
+  if (!status || status.online === false) return "offline";
+  if (module?.trip) return "trip";
+  if (module?.wd) return "watchdog";
+  if (module && module.enable === false) return "disabled";
 
   return "online";
 }
@@ -36,11 +29,16 @@ function StatusDot({ status }) {
   return <span className={`module-status-dot module-status-${status}`} />;
 }
 
-function DashboardLayout({ theme, onToggleTheme }) {
-  const [activeView, setActiveView] = useState("energy");
+function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
+  const [activeView] = useState(initialView);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [latest, setLatest] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [modules, setModules] = useState({});
+  const [moduleStatuses, setModuleStatuses] = useState({});
+  const [activeAlgorithm, setActiveAlgorithm] = useState(null);
+  const [autoStatus, setAutoStatus] = useState(null);
+  const [runCost, setRunCost] = useState(null);
   const [pollerSource, setPollerSource] = useState({
     mode: "azure",
     status: {},
@@ -49,11 +47,24 @@ function DashboardLayout({ theme, onToggleTheme }) {
 
   async function fetchData() {
     try {
-      const [latestRes, snapshotsRes, modulesRes, sourceRes] = await Promise.all([
+      const [
+        latestRes,
+        snapshotsRes,
+        modulesRes,
+        statusesRes,
+        sourceRes,
+        algorithmRes,
+        autoStatusRes,
+        runCostRes,
+      ] = await Promise.all([
         fetch(`${API_BASE}/latest`),
         fetch(`${API_BASE}/snapshots?limit=50`),
         fetch(`${API_BASE}/modules/latest`),
+        fetch(`${API_BASE}/modules/status`, { cache: "no-store" }),
         fetch(`${API_BASE}/poller/source`),
+        fetch(`${API_BASE}/algo/active`, { cache: "no-store" }),
+        fetch(`${API_BASE}/algo/auto/status`, { cache: "no-store" }),
+        fetch(`${API_BASE}/algo/run/cost`, { cache: "no-store" }),
       ]);
 
       if (!latestRes.ok || !snapshotsRes.ok) {
@@ -66,17 +77,29 @@ function DashboardLayout({ theme, onToggleTheme }) {
       ]);
 
       const modulesData = modulesRes.ok ? await modulesRes.json() : {};
+      const statusesData = statusesRes.ok ? await statusesRes.json() : {};
       const sourceData = sourceRes.ok ? await sourceRes.json() : null;
+      const algorithmData = algorithmRes.ok ? await algorithmRes.json() : null;
+      const autoStatusData = autoStatusRes.ok ? await autoStatusRes.json() : null;
+      const runCostData = runCostRes.ok ? await runCostRes.json() : null;
 
       setLatest(latestData?.error ? null : latestData);
       setSnapshots(Array.isArray(snapshotsData) ? snapshotsData : []);
       setModules(modulesData || {});
+      setModuleStatuses(statusesData || {});
+      setActiveAlgorithm(algorithmData);
+      setAutoStatus(autoStatusData);
+      setRunCost(runCostData);
       if (sourceData) setPollerSource(sourceData);
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
       setLatest(null);
       setSnapshots([]);
       setModules({});
+      setModuleStatuses({});
+      setActiveAlgorithm(null);
+      setAutoStatus(null);
+      setRunCost(null);
     }
   }
 
@@ -100,22 +123,25 @@ function DashboardLayout({ theme, onToggleTheme }) {
   }
 
   useEffect(() => {
-    fetchData();
+    const initialFetch = setTimeout(fetchData, 0);
     const interval = setInterval(fetchData, 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialFetch);
+      clearInterval(interval);
+    };
   }, []);
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <button
+          <Link
             className="topbar-logo"
-            onClick={() => setActiveView("energy")}
+            to="/"
             aria-label="Home"
           >
             <img src="/oct.png" alt="Octopus" className="topbar-logo-img" />
-          </button>
+          </Link>
 
           <nav className="topbar-nav">
             <button className="topbar-link">Energy</button>
@@ -164,64 +190,88 @@ function DashboardLayout({ theme, onToggleTheme }) {
 
       <div className="app-layout">
         <aside className="sidebar">
-          <div
+          <Link
+            to="/"
             className={`nav-item ${activeView === "energy" ? "active" : ""}`}
-            onClick={() => setActiveView("energy")}
           >
-            <span className="nav-icon">🏠</span>
-            <span>Home</span>
-          </div>
-
-          <Link className="nav-item" to="/smps">
-            <span className="nav-icon">📈</span>
-            <span>SMPS Overview</span>
+            <span className="nav-icon">⌂</span>
+            <span>System Overview</span>
           </Link>
 
-          <div
-            className={`nav-item ${activeView === "smps" ? "active" : ""}`}
-            onClick={() => setActiveView("smps")}
+          <Link
+            className={`nav-item ${activeView === "overview" ? "active" : ""}`}
+            to="/smps"
           >
-            <span className="nav-icon">🔌</span>
-            <span>SMPS Modules</span>
-          </div>
+            <span className="nav-icon">↗</span>
+            <span>SMPS</span>
+          </Link>
 
-          <div className="nav-item">
-            <span className="nav-icon">⚡</span>
+          <div className="nav-item nav-item-muted">
+            <span className="nav-icon">ϟ</span>
             <span>My Energy</span>
           </div>
 
-          <div className="nav-item">
-            <span className="nav-icon">💳</span>
+          <div className="nav-item nav-item-muted">
+            <span className="nav-icon">£</span>
             <span>Payments</span>
           </div>
 
-          <div className="nav-item">
-            <span className="nav-icon">🐙</span>
+          <div className="nav-item nav-item-muted">
+            <span className="nav-icon">◎</span>
             <span>Octoplus</span>
           </div>
         </aside>
 
         <main className="main-content">
-          <div className="hero-octopus">
-            <DotLottieReact
-              src="/porthole.lottie"
-              loop
-              autoplay
-              className="hero-octopus-lottie"
-            />
-          </div>
+          {activeView === "energy" && (
+            <div className="hero-octopus">
+              <DotLottieReact
+                src="/porthole.lottie"
+                loop
+                autoplay
+                className="hero-octopus-lottie"
+              />
+            </div>
+          )}
 
-          {activeView === "smps" ? (
-            <div className="dashboard-container" style={{ maxWidth: "100%" }}>
-              <h1 className="page-title">SMPS Modules</h1>
-              <p className="date-subtitle">
-                Live telemetry from backend DB. Commands are proxyed through the
-                backend API.
-              </p>
-              <SmpsModules apiBase={API_BASE} theme={theme} />
+          {activeView === "overview" ? (
+            <div className="dashboard-container">
+              <div className="page-heading-row">
+                <div>
+                  <h1 className="page-title">SMPS</h1>
+                  <p className="date-subtitle">
+                    Board health, live electrical readings, and telemetry trends.
+                  </p>
+                </div>
+                <button
+                  className={`advanced-toggle ${showAdvanced ? "active" : ""}`}
+                  onClick={() => setShowAdvanced((visible) => !visible)}
+                  aria-expanded={showAdvanced}
+                >
+                  {showAdvanced ? "Hide advanced" : "Advanced"}
+                </button>
+              </div>
+
+              <SMPS
+                apiBase={API_BASE}
+                theme={theme}
+                showAdvanced={showAdvanced}
+                activeAlgorithm={activeAlgorithm}
+                autoStatus={autoStatus}
+                runCost={runCost}
+              />
             </div>
           ) : (
-            <HomeContent latest={latest} snapshots={snapshots} modules={modules} theme={theme} />
+            <HomeContent
+              latest={latest}
+              snapshots={snapshots}
+              modules={modules}
+              moduleStatuses={moduleStatuses}
+              activeAlgorithm={activeAlgorithm}
+              autoStatus={autoStatus}
+              runCost={runCost}
+              theme={theme}
+            />
           )}
         </main>
       </div>
@@ -229,7 +279,16 @@ function DashboardLayout({ theme, onToggleTheme }) {
   );
 }
 
-function HomeContent({ latest, snapshots, modules, theme = "dark" }) {
+function HomeContent({
+  latest,
+  snapshots,
+  modules,
+  moduleStatuses,
+  activeAlgorithm,
+  autoStatus,
+  runCost,
+  theme = "dark",
+}) {
   const isLightTheme = theme === "light";
   const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
   const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
@@ -243,7 +302,12 @@ function HomeContent({ latest, snapshots, modules, theme = "dark" }) {
 
   return (
     <div className="dashboard-container">
-      <h1 className="page-title" style={{ color: cardTitleColor }}>My energy insights</h1>
+      <div>
+        <h1 className="page-title" style={{ color: cardTitleColor }}>System overview</h1>
+        <p className="date-subtitle">
+          Live system health, energy market data, and algorithm performance.
+        </p>
+      </div>
 
       <div className="tabs-container">
         <div className="tab active">Day</div>
@@ -255,6 +319,12 @@ function HomeContent({ latest, snapshots, modules, theme = "dark" }) {
 
       <p className="date-subtitle">Latest Tick: {latest?.tick ?? "..."}</p>
 
+      <OperationalSummary
+        activeAlgorithm={activeAlgorithm}
+        autoStatus={autoStatus}
+        runCost={runCost}
+      />
+
       <section className="card">
         <div className="card-header">
           <span className="icon-green">●</span>
@@ -263,7 +333,7 @@ function HomeContent({ latest, snapshots, modules, theme = "dark" }) {
 
         <div className="module-status-grid">
           {MODULE_ROLES.map((role) => {
-            const status = getModuleStatus(modules?.[role]);
+            const status = getModuleStatus(modules?.[role], moduleStatuses?.[role]);
 
             return (
               <div key={role} className="module-status-item">
@@ -468,67 +538,76 @@ function HomeContent({ latest, snapshots, modules, theme = "dark" }) {
 
 function SmpsStandalonePage({ theme, onToggleTheme }) {
   return (
-    <div className="smps-route-shell">
-      <aside className="sidebar smps-route-sidebar">
-        <Link className="nav-item" to="/">
-          <span className="nav-icon">🏠</span>
-          <span>Home</span>
-        </Link>
-
-        <div className="nav-item active" aria-current="page">
-          <span className="nav-icon">📈</span>
-          <span>SMPS Overview</span>
-        </div>
-
-        <Link className="nav-item" to="/smpsmodule">
-          <span className="nav-icon">🔌</span>
-          <span>SMPS Modules</span>
-        </Link>
-
-        <button className="nav-item nav-item-button" onClick={onToggleTheme}>
-          <span className="nav-icon">◐</span>
-          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
-      </aside>
-
-      <div className="smps-route-content dashboard-container" style={{ maxWidth: "100%" }}>
-        <h1 className="page-title">SMPS Overview</h1>
-        <p className="date-subtitle">Module telemetry plots from backend DB.</p>
-        <SMPS apiBase={API_BASE} theme={theme} />
-      </div>
-    </div>
+    <DashboardLayout
+      theme={theme}
+      onToggleTheme={onToggleTheme}
+      initialView="overview"
+    />
   );
 }
 
-function SmpsModuleStandalonePage({ theme, onToggleTheme }) {
+function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
+  const todayCost = runCost?.today;
+  const netCost = todayCost?.net_cost;
+  const netCostLabel =
+    typeof netCost === "number"
+      ? `${netCost < 0 ? "-" : ""}${Math.abs(netCost).toFixed(2)}`
+      : "—";
+
   return (
-    <div className="smps-route-shell">
-      <aside className="sidebar smps-route-sidebar">
-        <Link className="nav-item" to="/">
-          <span className="nav-icon">🏠</span>
-          <span>Home</span>
-        </Link>
-
-        <Link className="nav-item" to="/smps">
-          <span className="nav-icon">📈</span>
-          <span>SMPS Overview</span>
-        </Link>
-
-        <div className="nav-item active" aria-current="page">
-          <span className="nav-icon">🔌</span>
-          <span>SMPS Modules</span>
-        </div>
-
-        <button className="nav-item nav-item-button" onClick={onToggleTheme}>
-          <span className="nav-icon">◐</span>
-          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
-      </aside>
-
-      <div className="smps-route-content smps-standalone-page">
-        <SmpsModules apiBase={API_BASE} theme={theme} />
+    <section className="system-summary-grid" aria-label="Algorithm and cost summary">
+      <div className="system-summary-card">
+        <span className="system-summary-label">Active algorithm</span>
+        <strong>{activeAlgorithm?.name || activeAlgorithm?.id || "—"}</strong>
+        <span className={`system-run-state ${autoStatus?.running ? "running" : "stopped"}`}>
+          {autoStatus?.running ? "Running" : "Stopped"}
+        </span>
       </div>
-    </div>
+
+      <div className="system-summary-card">
+        <span className="system-summary-label">Import cost today</span>
+        <strong>
+          {typeof todayCost?.import_cost === "number" ? todayCost.import_cost.toFixed(2) : "—"}
+        </strong>
+        <span>
+          {typeof todayCost?.import_energy_J === "number"
+            ? `${todayCost.import_energy_J.toFixed(1)} J imported`
+            : "No run data"}
+        </span>
+      </div>
+
+      <div className="system-summary-card">
+        <span className="system-summary-label">Export revenue today</span>
+        <strong>
+          {typeof todayCost?.export_revenue === "number"
+            ? todayCost.export_revenue.toFixed(2)
+            : "—"}
+        </strong>
+        <span>
+          {typeof todayCost?.export_energy_J === "number"
+            ? `${todayCost.export_energy_J.toFixed(1)} J exported`
+            : "No run data"}
+        </span>
+      </div>
+
+      <div className="system-summary-card">
+        <span className="system-summary-label">Net cost today</span>
+        <strong
+          className={
+            typeof netCost === "number" && netCost < 0 ? "cost-positive" : "cost-negative"
+          }
+        >
+          {netCostLabel}
+        </strong>
+        <span>
+          {typeof netCost === "number"
+            ? netCost < 0
+              ? "Net earned"
+              : "Net paid"
+            : "Start an algorithm run"}
+        </span>
+      </div>
+    </section>
   );
 }
 
@@ -555,7 +634,7 @@ function App() {
       />
       <Route
         path="/smpsmodule"
-        element={<SmpsModuleStandalonePage theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} />}
+        element={<Navigate to="/smps" replace />}
       />
     </Routes>
   );

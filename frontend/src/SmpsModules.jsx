@@ -12,6 +12,10 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const ROLES = ["pv", "grid", "export", "cap", "led"];
+const ROLE_COLUMNS = [
+  ["pv", "export", "led"],
+  ["grid", "cap"],
+];
 const ALGORITHM_ROLES = ["pv", "grid", "export", "cap", "led"];
 
 const HIST_MAX = 60;
@@ -881,6 +885,64 @@ function LEDControls({ onCmd }) {
   );
 }
 
+export function ModuleAdvancedPanel({
+  role,
+  data,
+  status,
+  host = "",
+  onCmd,
+  lastBusVoltage,
+}) {
+  const stats = {
+    pv: <PVStats d={data} />,
+    grid: <GridStats d={data} />,
+    export: <ExportStats d={data} />,
+    cap: <CapStats d={data} />,
+    led: <LEDStats d={data} lastBusVoltage={lastBusVoltage} />,
+  }[role];
+
+  const controls = {
+    pv: <PVControls d={data} onCmd={onCmd} />,
+    grid: <GridControls onCmd={onCmd} />,
+    export: <ExportControls onCmd={onCmd} />,
+    cap: <CapControls d={data} onCmd={onCmd} />,
+    led: <LEDControls onCmd={onCmd} />,
+  }[role];
+
+  const netMode = data?.net_mode || "offline";
+  const wifi = data?.wifi_connected ? "connected" : "disconnected";
+  const backend = data?.backend_post_ok ? "ok" : "fail";
+
+  return (
+    <div className="smps-inline-advanced">
+      <div className="smps-inline-meta">
+        <div className="smps-mod-host">host: {firstHost(host) || "—"}</div>
+        <StatusLine status={status} />
+      </div>
+
+      {data?.trip && (
+        <div className="smps-trip-banner">
+          <b>TRIP</b> · reason: <b>{data.trip_reason || "unknown"}</b> · auto-recovers once
+          fault clears
+        </div>
+      )}
+
+      {data ? (
+        <>
+          <div className={role === "led" ? "" : "smps-stats-grid"}>{stats}</div>
+          <div className="smps-netline">
+            net {netMode} · wifi {wifi} · backend {backend}
+          </div>
+        </>
+      ) : (
+        <div className="smps-offline-msg">No telemetry — module offline</div>
+      )}
+
+      <div className="smps-controls">{controls}</div>
+    </div>
+  );
+}
+
 // ─── Module card ─────────────────────────────────────────────────────────────
 
 function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage, theme = "dark" }) {
@@ -1221,18 +1283,22 @@ export default function SmpsModules({ apiBase = "", theme = "dark" }) {
       <GlobalChart data={globalHist} theme={theme} />
 
       <div className="smps-grid">
-        {ROLES.map((role) => (
-          <ModuleCard
-            key={role}
-            role={role}
-            data={modules[role] || null}
-            status={statuses[role] || null}
-            history={hist[role] || []}
-            host={hosts[role] || ""}
-            onCmd={(payload) => sendCmd(role, payload)}
-            lastBusVoltage={vbus}
-            theme={theme}
-          />
+        {ROLE_COLUMNS.map((roles, columnIndex) => (
+          <div className="smps-grid-column" key={columnIndex}>
+            {roles.map((role) => (
+              <ModuleCard
+                key={role}
+                role={role}
+                data={modules[role] || null}
+                status={statuses[role] || null}
+                history={hist[role] || []}
+                host={hosts[role] || ""}
+                onCmd={(payload) => sendCmd(role, payload)}
+                lastBusVoltage={vbus}
+                theme={theme}
+              />
+            ))}
+          </div>
         ))}
       </div>
     </div>

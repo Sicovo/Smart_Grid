@@ -1,0 +1,14 @@
+﻿{
+    "collected_at":  "2026-06-09T16:39:34.8877842+01:00",
+    "algorithm":  "smart_v1",
+    "sample_count":  22,
+    "nonzero_command_count":  9,
+    "e2e_ms":  {
+                   "mean":  1616.436,
+                   "median":  1660.078,
+                   "p95":  2797.234,
+                   "minimum":  596.901,
+                   "maximum":  3937.983
+               },
+    "csv_file":  "D:\\Users\\Desktop\\EIE\\smart_grid\\report\\data\\e2e-latency-20260609-163549.csv"
+}
