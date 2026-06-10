@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Routes, Route, Link, Navigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, Navigate, useLocation } from "react-router-dom";
 import {
   XAxis,
   Tooltip,
@@ -33,8 +33,7 @@ function StatusDot({ status }) {
   return <span className={`module-status-dot module-status-${status}`} />;
 }
 
-function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
-  const [activeView] = useState(initialView);
+function DashboardLayout({ theme, onToggleTheme, activeView = "energy" }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [latest, setLatest] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
@@ -48,64 +47,76 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
     status: {},
   });
   const [sourceSwitching, setSourceSwitching] = useState(false);
+  const fetchInFlight = useRef(false);
+  const handleSmpsLiveData = useCallback((nextModules, nextStatuses) => {
+    if (nextModules) setModules(nextModules);
+    if (nextStatuses) setModuleStatuses(nextStatuses);
+  }, []);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
+    if (fetchInFlight.current) return;
+    fetchInFlight.current = true;
+
     try {
-      const [
-        latestRes,
-        snapshotsRes,
-        modulesRes,
-        statusesRes,
-        sourceRes,
-        algorithmRes,
-        autoStatusRes,
-        runCostRes,
-      ] = await Promise.all([
+      const commonRequests = [
         fetch(`${API_BASE}/latest`),
-        fetch(`${API_BASE}/snapshots?limit=50`),
-        fetch(`${API_BASE}/modules/latest`),
-        fetch(`${API_BASE}/modules/status`, { cache: "no-store" }),
         fetch(`${API_BASE}/poller/source`),
         fetch(`${API_BASE}/algo/active`, { cache: "no-store" }),
         fetch(`${API_BASE}/algo/auto/status`, { cache: "no-store" }),
-        fetch(`${API_BASE}/algo/run/cost`, { cache: "no-store" }),
-      ]);
+      ];
+      const overviewRequests =
+        activeView === "energy"
+          ? [
+              fetch(`${API_BASE}/snapshots?limit=50`),
+              fetch(`${API_BASE}/modules/latest`),
+              fetch(`${API_BASE}/modules/status`, { cache: "no-store" }),
+            ]
+          : [];
+      const responses = await Promise.all([...commonRequests, ...overviewRequests]);
+      const [latestRes, sourceRes, algorithmRes, autoStatusRes] = responses;
 
-      if (!latestRes.ok || !snapshotsRes.ok) {
+      if (!latestRes.ok) {
         throw new Error("Backend API request failed");
       }
 
-      const [latestData, snapshotsData] = await Promise.all([
+      const [latestData, sourceData, algorithmData, autoStatusData] = await Promise.all([
         latestRes.json(),
-        snapshotsRes.json(),
+        sourceRes.ok ? sourceRes.json() : null,
+        algorithmRes.ok ? algorithmRes.json() : null,
+        autoStatusRes.ok ? autoStatusRes.json() : null,
       ]);
 
-      const modulesData = modulesRes.ok ? await modulesRes.json() : {};
-      const statusesData = statusesRes.ok ? await statusesRes.json() : {};
-      const sourceData = sourceRes.ok ? await sourceRes.json() : null;
-      const algorithmData = algorithmRes.ok ? await algorithmRes.json() : null;
-      const autoStatusData = autoStatusRes.ok ? await autoStatusRes.json() : null;
-      const runCostData = runCostRes.ok ? await runCostRes.json() : null;
-
       setLatest(latestData?.error ? null : latestData);
-      setSnapshots(Array.isArray(snapshotsData) ? snapshotsData : []);
-      setModules(modulesData || {});
-      setModuleStatuses(statusesData || {});
       setActiveAlgorithm(algorithmData);
       setAutoStatus(autoStatusData);
-      setRunCost(runCostData);
       if (sourceData) setPollerSource(sourceData);
+
+      if (activeView === "energy") {
+        const [snapshotsRes, modulesRes, statusesRes] = responses.slice(4);
+        const [snapshotsData, modulesData, statusesData] = await Promise.all([
+          snapshotsRes?.ok ? snapshotsRes.json() : null,
+          modulesRes?.ok ? modulesRes.json() : null,
+          statusesRes?.ok ? statusesRes.json() : null,
+        ]);
+        if (Array.isArray(snapshotsData)) setSnapshots(snapshotsData);
+        if (modulesData) setModules(modulesData);
+        if (statusesData) setModuleStatuses(statusesData);
+      }
+
+      if (autoStatusData?.started_at) {
+        const runCostRes = await fetch(`${API_BASE}/algo/run/cost`, {
+          cache: "no-store",
+        });
+        setRunCost(runCostRes.ok ? await runCostRes.json() : null);
+      } else {
+        setRunCost(null);
+      }
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
-      setLatest(null);
-      setSnapshots([]);
-      setModules({});
-      setModuleStatuses({});
-      setActiveAlgorithm(null);
-      setAutoStatus(null);
-      setRunCost(null);
+    } finally {
+      fetchInFlight.current = false;
     }
-  }
+  }, [activeView]);
 
   async function togglePollerSource() {
     const mode = pollerSource.mode === "fixed" ? "azure" : "fixed";
@@ -127,13 +138,29 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
   }
 
   useEffect(() => {
-    const initialFetch = setTimeout(fetchData, 0);
-    const interval = setInterval(fetchData, 1000);
-    return () => {
-      clearTimeout(initialFetch);
-      clearInterval(interval);
+    let stopped = false;
+    let timerId;
+
+    const poll = async () => {
+      await fetchData();
+      if (!stopped) {
+        timerId = window.setTimeout(poll, document.hidden ? 5000 : 2000);
+      }
     };
-  }, []);
+    const handleVisibility = () => {
+      if (document.hidden) return;
+      window.clearTimeout(timerId);
+      poll();
+    };
+
+    poll();
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [fetchData]);
 
   const onlineModuleCount = MODULE_ROLES.filter(
     (role) => getModuleStatus(modules?.[role], moduleStatuses?.[role]) === "online"
@@ -278,6 +305,7 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
                 activeAlgorithm={activeAlgorithm}
                 autoStatus={autoStatus}
                 runCost={runCost}
+                onLiveData={handleSmpsLiveData}
               />
             </div>
           ) : (
@@ -385,6 +413,10 @@ function HomeContent({
                 axisLine={false}
               />
               <Tooltip
+                formatter={(value, name) => [
+                  typeof value === "number" ? value.toFixed(3) : value,
+                  name,
+                ]}
                 contentStyle={{
                   backgroundColor: tooltipBackground,
                   borderColor: tooltipBorder,
@@ -413,6 +445,10 @@ function HomeContent({
                 axisLine={false}
               />
               <Tooltip
+                formatter={(value, name) => [
+                  typeof value === "number" ? value.toFixed(3) : value,
+                  name,
+                ]}
                 contentStyle={{
                   backgroundColor: tooltipBackground,
                   borderColor: tooltipBorder,
@@ -435,7 +471,7 @@ function HomeContent({
             <p style={{ color: secondaryText }}>Current Demand</p>
             <h3>
               {typeof latest?.instant_demand === "number"
-                ? `${latest.instant_demand.toFixed(2)} W`
+                ? `${latest.instant_demand.toFixed(3)} W`
                 : "-"}
             </h3>
           </div>
@@ -443,7 +479,7 @@ function HomeContent({
           <div className="stat-box">
             <p style={{ color: secondaryText }}>Solar Input</p>
             <h3>
-              {typeof latest?.sun === "number" ? `${latest.sun.toFixed(0)}%` : "-"}
+              {typeof latest?.sun === "number" ? `${latest.sun.toFixed(3)}%` : "-"}
             </h3>
           </div>
         </div>
@@ -467,7 +503,7 @@ function HomeContent({
               <div key={idx} className={`deferable-job ${expired ? "expired" : ""}`}>
                 <div className="job-header">
                   <span>Job {idx + 1}</span>
-                  <span>{Number(job.energy).toFixed(1)} J</span>
+                  <span>{Number(job.energy).toFixed(3)} J</span>
                 </div>
 
                 <div className="progress-labels">
@@ -491,7 +527,7 @@ function HomeContent({
           <div className="sub" style={{ color: secondaryText }}>Current Market...</div>
           <div className="val" style={{ color: accentText }}>
             {typeof latest?.buy_price === "number"
-              ? latest.buy_price.toFixed(0)
+              ? latest.buy_price.toFixed(3)
               : "-"}
           </div>
           <div>Buy Price (pence/kWh)</div>
@@ -504,7 +540,7 @@ function HomeContent({
           <div className="sub" style={{ color: secondaryText }}>Exporting power...</div>
           <div className="val" style={{ color: isLightTheme ? "#1f7d3b" : "#00e676" }}>
             {typeof latest?.sell_price === "number"
-              ? latest.sell_price.toFixed(0)
+              ? latest.sell_price.toFixed(3)
               : "-"}
           </div>
           <div>Sell Price (pence/kWh)</div>
@@ -526,22 +562,12 @@ function HomeContent({
   );
 }
 
-function SmpsStandalonePage({ theme, onToggleTheme }) {
-  return (
-    <DashboardLayout
-      theme={theme}
-      onToggleTheme={onToggleTheme}
-      initialView="overview"
-    />
-  );
-}
-
 function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
   const todayCost = runCost?.today;
   const netCost = todayCost?.net_cost;
   const netCostLabel =
     typeof netCost === "number"
-      ? `${netCost < 0 ? "-" : ""}${Math.abs(netCost).toFixed(2)}`
+      ? `${netCost < 0 ? "-" : ""}${Math.abs(netCost).toFixed(3)}`
       : "—";
 
   return (
@@ -557,11 +583,11 @@ function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
       <div className="system-summary-card">
         <span className="system-summary-label">Import cost today</span>
         <strong>
-          {typeof todayCost?.import_cost === "number" ? todayCost.import_cost.toFixed(2) : "—"}
+          {typeof todayCost?.import_cost === "number" ? todayCost.import_cost.toFixed(3) : "—"}
         </strong>
         <span>
           {typeof todayCost?.import_energy_J === "number"
-            ? `${todayCost.import_energy_J.toFixed(1)} J imported`
+            ? `${todayCost.import_energy_J.toFixed(3)} J imported`
             : "No run data"}
         </span>
       </div>
@@ -570,12 +596,12 @@ function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
         <span className="system-summary-label">Export revenue today</span>
         <strong>
           {typeof todayCost?.export_revenue === "number"
-            ? todayCost.export_revenue.toFixed(2)
+            ? todayCost.export_revenue.toFixed(3)
             : "—"}
         </strong>
         <span>
           {typeof todayCost?.export_energy_J === "number"
-            ? `${todayCost.export_energy_J.toFixed(1)} J exported`
+            ? `${todayCost.export_energy_J.toFixed(3)} J exported`
             : "No run data"}
         </span>
       </div>
@@ -602,6 +628,7 @@ function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
 }
 
 function Overview() {
+  const location = useLocation();
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
     return saved === "light" ? "light" : "dark";
@@ -612,21 +639,19 @@ function Overview() {
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
+  if (location.pathname === "/smpsmodule") {
+    return <Navigate to="/smps" replace />;
+  }
+  if (location.pathname !== "/" && location.pathname !== "/smps") {
+    return <Navigate to="/" replace />;
+  }
+
   return (
-    <Routes>
-      <Route
-        path="/"
-        element={<DashboardLayout theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} />}
-      />
-      <Route
-        path="/smps"
-        element={<SmpsStandalonePage theme={theme} onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} />}
-      />
-      <Route
-        path="/smpsmodule"
-        element={<Navigate to="/smps" replace />}
-      />
-    </Routes>
+    <DashboardLayout
+      theme={theme}
+      activeView={location.pathname === "/smps" ? "overview" : "energy"}
+      onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+    />
   );
 }
 

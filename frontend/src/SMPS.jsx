@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
-} from "recharts";
 import { BusGauge, GlobalChart, ModuleAdvancedPanel } from "./SmpsModules";
+import UnifiedLineChart from "./UnifiedLineChart";
 
 const ROLES = ["pv", "grid", "export", "cap", "led"];
 const ROLE_COLUMNS = [
@@ -110,7 +108,7 @@ function buildGlobalTelemetryHistory(hist) {
   });
 }
 
-function fmt(v, digits = 2) {
+function fmt(v, digits = 3) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   if (typeof v === "number") return v.toFixed(digits);
   return String(v);
@@ -213,17 +211,10 @@ function buildOverviewSeries(gridSnapshots, pvHistory, gridHistory, exportHistor
 function OverviewGraphCard({
   data,
   theme = "dark",
-  vbus = null,
-  busHistory = [],
-  advanced = false,
 }) {
   const latest = data[data.length - 1];
   const isLightTheme = theme === "light";
-  const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
   const titleColor = isLightTheme ? "#182235" : "#ffffff";
-  const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
-  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#27134d";
-  const tooltipLabel = isLightTheme ? "#1a2333" : "#ffffff";
   const series = {
     pv: isLightTheme ? "#1f7d3b" : "#00e676",
     demand: isLightTheme ? "#167f91" : "#00f0ff",
@@ -262,70 +253,52 @@ function OverviewGraphCard({
         </div>
         <div className="smps-plot-stat">
           <p>Import / Export</p>
-          <h3>{latest ? `${fmt(latest.cumulative_import_J, 0)} / ${fmt(latest.cumulative_export_J, 0)} J` : "—"}</h3>
+          <h3>{latest ? `${fmt(latest.cumulative_import_J)} / ${fmt(latest.cumulative_export_J)} J` : "—"}</h3>
         </div>
       </div>
 
-      <div className="smps-overview-bus">
-        <div className="smps-overview-section-heading">
-          <div>
-            <h3>Live bus</h3>
-            <p>Current bus voltage against the 9.5–10.5 V operating deadband.</p>
+      <UnifiedLineChart
+        data={data}
+        xKey="tick"
+        height={320}
+        theme={theme}
+        rightAxis
+        lines={[
+          { key: "pv_power_W", label: "PV power", color: series.pv },
+          { key: "instant_demand_W", label: "Demand", color: series.demand },
+          { key: "deferrable_1_J", label: "Deferrable 1", color: series.def1 },
+          { key: "deferrable_2_J", label: "Deferrable 2", color: series.def2 },
+          { key: "deferrable_3_J", label: "Deferrable 3", color: series.def3 },
+          { key: "cumulative_export_J", label: "Cumulative export", color: series.export, axis: "right" },
+          { key: "cumulative_import_J", label: "Cumulative import", color: series.import, axis: "right" },
+        ]}
+      />
+    </section>
+  );
+}
+
+function BusOverviewCard({ vbus, busHistory, theme = "dark", advanced = false }) {
+  return (
+    <section className="card smps-plot-card smps-overview-card smps-bus-card">
+      <div className="smps-plot-header">
+        <div>
+          <div className="smps-plot-title">Bus Health</div>
+          <div className="smps-plot-sub">
+            Live DC bus voltage and module-level electrical telemetry.
           </div>
         </div>
+      </div>
+
+      <div className="smps-bus-summary">
         <BusGauge vbus={vbus} />
       </div>
 
-      <div className="smps-plot-wrapper">
-        <ResponsiveContainer width="100%" height={320}>
-          <LineChart data={data}>
-            <XAxis
-              dataKey="tick"
-              stroke={axisColor}
-              tick={{ fontSize: 11 }}
-              tickLine={false}
-              axisLine={false}
-            />
-            <YAxis
-              yAxisId="power"
-              stroke={axisColor}
-              tick={{ fontSize: 11 }}
-              tickLine={false}
-              axisLine={false}
-              width={48}
-            />
-            <YAxis
-              yAxisId="energy"
-              orientation="right"
-              stroke={axisColor}
-              tick={{ fontSize: 11 }}
-              tickLine={false}
-              axisLine={false}
-              width={56}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: tooltipBackground,
-                borderColor: tooltipBorder,
-                borderRadius: "var(--radius-control)",
-              }}
-              labelStyle={{ color: tooltipLabel }}
-            />
-            <Legend wrapperStyle={{ color: axisColor, fontSize: 12 }} />
-            <Line yAxisId="power" type="monotone" dataKey="pv_power_W" name="PV power" stroke={series.pv} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="instant_demand_W" name="Demand" stroke={series.demand} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="deferrable_1_J" name="Deferrable 1" stroke={series.def1} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="deferrable_2_J" name="Deferrable 2" stroke={series.def2} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="power" type="monotone" dataKey="deferrable_3_J" name="Deferrable 3" stroke={series.def3} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="energy" type="monotone" dataKey="cumulative_export_J" name="Cumulative export" stroke={series.export} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="energy" type="monotone" dataKey="cumulative_import_J" name="Cumulative import" stroke={series.import} strokeWidth={2} dot={false} isAnimationActive={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
       {advanced && (
-        <div className="smps-overview-bus-chart">
-          <GlobalChart data={busHistory} theme={theme} />
+        <div className="smps-bus-advanced">
+          <GlobalChart
+            data={busHistory}
+            theme={theme}
+          />
         </div>
       )}
     </section>
@@ -499,7 +472,7 @@ function NaiveDispatchCard({
           <span>Net balance</span>
           <strong>
             {typeof diagnostics.net_W === "number"
-              ? `${diagnostics.net_W.toFixed(2)} W`
+              ? `${diagnostics.net_W.toFixed(3)} W`
             : "—"}
           </strong>
         </div>
@@ -507,7 +480,7 @@ function NaiveDispatchCard({
           <span>Import cost</span>
           <strong>
             {typeof todayCost?.import_cost === "number"
-              ? todayCost.import_cost.toFixed(2)
+              ? todayCost.import_cost.toFixed(3)
               : "—"}
           </strong>
         </div>
@@ -515,43 +488,67 @@ function NaiveDispatchCard({
           <span>Export revenue</span>
           <strong>
             {typeof todayCost?.export_revenue === "number"
-              ? todayCost.export_revenue.toFixed(2)
+              ? todayCost.export_revenue.toFixed(3)
               : "—"}
           </strong>
         </div>
         <div>
           <span>Net cost</span>
           <strong className={typeof netCost === "number" && netCost < 0 ? "cost-positive" : "cost-negative"}>
-            {typeof netCost === "number" ? netCost.toFixed(2) : "—"}
+            {typeof netCost === "number" ? netCost.toFixed(3) : "—"}
           </strong>
         </div>
       </div>
 
       {advanced && (
         <div className="algorithm-inline-advanced">
-          <AlgorithmTabs
-            apiBase={apiBase}
-            activeId={activeAlgoId}
-            onSwitch={onSwitchAlgo}
-            switching={switchingAlgo}
-            switchMsg={switchAlgoMsg}
-          />
+          <section className="algorithm-stage algorithm-selection-stage">
+            <div className="algorithm-stage-heading">
+              <div>
+                <h3>Algorithm selection</h3>
+                <p>Select the strategy that produces the next dispatch command.</p>
+              </div>
+            </div>
+            <AlgorithmTabs
+              apiBase={apiBase}
+              activeId={activeAlgoId}
+              onSwitch={onSwitchAlgo}
+              switching={switchingAlgo}
+              switchMsg={switchAlgoMsg}
+            />
+          </section>
 
           <NaiveDebugPanel naive={naive} />
 
-          <AlgoExtrasPanel naive={naive} />
+          <section className="algorithm-stage">
+            <div className="algorithm-stage-heading">
+              <div>
+                <h3>Forecast and economics</h3>
+                <p>Forward-looking decision context and the financial result of the run.</p>
+              </div>
+            </div>
+            <AlgoExtrasPanel naive={naive} />
 
-          <RunCostPanel apiBase={apiBase} refreshToken={runRefreshToken} />
+            <RunCostPanel apiBase={apiBase} refreshToken={runRefreshToken} />
+          </section>
 
-          <AlgorithmRunControls
-            apiBase={apiBase}
-            applyBusy={applyBusy}
-            applyMsg={applyMsg}
-            canTest={!!naive}
-            onTest={onApply}
-            refreshToken={runRefreshToken}
-            onRefresh={() => setRunRefreshToken((token) => token + 1)}
-          />
+          <section className="algorithm-stage">
+            <div className="algorithm-stage-heading">
+              <div>
+                <h3>Run controls</h3>
+                <p>Start dispatch, test one tick, refresh status, or export the current run.</p>
+              </div>
+            </div>
+            <AlgorithmRunControls
+              apiBase={apiBase}
+              applyBusy={applyBusy}
+              applyMsg={applyMsg}
+              canTest={!!naive}
+              onTest={onApply}
+              refreshToken={runRefreshToken}
+              onRefresh={() => setRunRefreshToken((token) => token + 1)}
+            />
+          </section>
         </div>
       )}
     </section>
@@ -564,7 +561,8 @@ function NaiveDispatchCard({
 // commands_to_diagnostics) and renders a compact, glanceable view.
 function NaiveDebugPanel({ naive }) {
   const d   = naive?.diagnostics || {};
-  const fmt = (v, n = 2, suf = "") =>
+  const inp = naive?.inputs || {};
+  const fmt = (v, n = 3, suf = "") =>
     typeof v === "number" ? `${v.toFixed(n)}${suf}` : "—";
 
   const active = Array.isArray(d.active_deferrables) ? d.active_deferrables : [];
@@ -590,7 +588,14 @@ function NaiveDebugPanel({ naive }) {
   const mutedStyle  = { color: "rgba(127,127,127,0.85)" };
 
   return (
-    <div className="naive-debug">
+    <section className="algorithm-stage naive-debug">
+      <div className="algorithm-stage-heading">
+        <div>
+          <h3>Current dispatch decision</h3>
+          <p>How the active algorithm reads the power balance and assigns module outputs.</p>
+        </div>
+      </div>
+
       {/* Bus-side energy balance */}
       <section className="algo-section-card">
         <div className="algo-section-heading">
@@ -603,25 +608,39 @@ function NaiveDebugPanel({ naive }) {
         <div className="algo-flow-grid">
           <div className="algo-flow-card generation">
             <span>PV to bus</span>
-            <strong>{fmt(d.pv_bus_W, 2, " W")}</strong>
+            <strong>{fmt(d.pv_bus_W, 3, " W")}</strong>
             <small>
-              panel {fmt(d.pv_panel_W, 2, " W")} · efficiency {fmt(d.pv_eta_used, 2)}
+              panel {fmt(d.pv_panel_W, 3, " W")} · efficiency {fmt(d.pv_eta_used, 3)}
             </small>
           </div>
 
           <div className="algo-flow-card demand">
             <span>Effective load</span>
-            <strong>{fmt(d.effective_load_W, 2, " W")}</strong>
+            <strong>{fmt(d.effective_load_W, 3, " W")}</strong>
             <small>
-              demand {fmt(d.demand_W, 2, " W")} · deferrable {fmt(d.def_rate_total_W, 2, " W")}
+              demand {fmt(d.demand_W, 3, " W")} · deferrable {fmt(d.def_rate_total_W, 3, " W")}
             </small>
           </div>
 
           <div className="algo-flow-card storage">
             <span>Capacitor command</span>
-            <strong>{fmt(d.cap_p_W, 2, " W")}</strong>
+            <strong>{fmt(d.cap_p_W, 3, " W")}</strong>
             <small>i_cmd {fmt(naive?.suggested?.cap?.i_cmd, 3, " A")}</small>
           </div>
+        </div>
+
+        <div className="algo-setpoint-grid">
+          {[
+            ["cap.i_cmd", fmt(naive?.suggested?.cap?.i_cmd, 3, " A")],
+            ["LED each",  fmt(naive?.suggested?.led?.p_red, 3, " W")],
+            ["v_cap",     fmt(inp.v_cap_V, 3, " V")],
+            ["vbus",      fmt(inp.vbus_V, 3, " V")],
+          ].map(([label, value]) => (
+            <div key={label} className="algo-setpoint-card">
+              <p style={{ margin: 0, ...mutedStyle }}>{label}</p>
+              <h3 style={{ margin: 0, color: "inherit" }}>{value}</h3>
+            </div>
+          ))}
         </div>
 
         {clampLabel && <div className="algo-warning">{clampLabel}</div>}
@@ -630,7 +649,7 @@ function NaiveDebugPanel({ naive }) {
       {/* Active deferrables — the "what's filling up" view */}
       <div className="algo-detail-panel" style={panelStyle}>
         <div className="algo-detail-title">
-          Active deferrables ({active.length})
+          Load execution ({active.length} active)
         </div>
         {active.length === 0 ? (
           <div style={{ color: "#888" }}>
@@ -658,19 +677,19 @@ function NaiveDebugPanel({ naive }) {
                   <tr key={ad.index} style={{ borderTop: "1px solid rgba(128,128,128,0.2)" }}>
                     <td style={{ padding: "4px" }}>{ad.index}</td>
                     <td style={{ padding: "4px" }}>{ad.tick_start}–{ad.tick_end}</td>
-                    <td style={{ padding: "4px" }}>{fmt(ad.remaining_energy, 2)}</td>
+                    <td style={{ padding: "4px" }}>{fmt(ad.remaining_energy, 3)}</td>
                     <td style={{ padding: "4px" }}>{ad.ticks_remaining}</td>
                     <td style={{ padding: "4px" }}>
-                      <strong>{fmt(ad.rate_W, 2, " W")}</strong>
+                      <strong>{fmt(ad.rate_W, 3, " W")}</strong>
                     </td>
                     <td style={{ padding: "4px" }}>
                       <div className="progress-labels">
-                        <span>~{pct.toFixed(0)}% Served</span>
+                        <span>~{pct.toFixed(3)}% Served</span>
                       </div>
                       <div className="progress-bg">
                         <div
                           className="progress-fill"
-                          style={{ width: `${Math.min(100, pct).toFixed(1)}%` }}
+                          style={{ width: `${Math.min(100, pct).toFixed(3)}%` }}
                         />
                       </div>
                     </td>
@@ -682,26 +701,13 @@ function NaiveDebugPanel({ naive }) {
         )}
       </div>
 
-      {/* Outgoing setpoints */}
-      <div className="algo-setpoint-grid">
-        {[
-          ["cap.i_cmd", fmt(naive?.suggested?.cap?.i_cmd, 3, " A")],
-          ["LED each",  fmt(naive?.suggested?.led?.p_red, 2, " W")],
-        ].map(([label, value]) => (
-          <div key={label} className="algo-setpoint-card">
-            <p style={{ margin: 0, ...mutedStyle }}>{label}</p>
-            <h3 style={{ margin: 0, color: "inherit" }}>{value}</h3>
-          </div>
-        ))}
-      </div>
-
       {d.led_clamped_W > 0.01 && (
         <p className="algo-warning">
-          LED setpoint clamped: {fmt(d.led_clamped_W, 2, " W")} could not be dissipated
+          LED setpoint clamped: {fmt(d.led_clamped_W, 3, " W")} could not be dissipated
           (each channel hit 3 W cap)
         </p>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -771,8 +777,8 @@ function RunCostPanel({ apiBase, refreshToken = 0 }) {
 
 
 function DayCostCard({ label, block }) {
-  const fmt  = (v, n = 2) => (typeof v === "number" ? v.toFixed(n) : "—");
-  const fmtJ = (v) => (typeof v === "number" ? `${v.toFixed(1)} J` : "—");
+  const fmt  = (v, n = 3) => (typeof v === "number" ? v.toFixed(n) : "—");
+  const fmtJ = (v) => (typeof v === "number" ? `${v.toFixed(3)} J` : "—");
 
   if (!block) {
     return (
@@ -807,7 +813,7 @@ function DayCostCard({ label, block }) {
       <div className="algo-pnl-label">{label} · Azure day {block.day}</div>
       <div className="algo-pnl-coverage">{coverage}</div>
       <div className="algo-pnl-value" style={{ color: netColor }}>
-        {netSign}{fmt(netAbs, 2)}
+        {netSign}{fmt(netAbs, 3)}
       </div>
       <div className="algo-pnl-caption">
         {net > 0 ? "paid out (net)" : net < 0 ? "net earned" : "break-even"}
@@ -815,12 +821,12 @@ function DayCostCard({ label, block }) {
       <div className="algo-pnl-row import">
         <span>Import</span>
         <span>{fmtJ(block.import_energy_J)}</span>
-        <strong>+{fmt(block.import_cost, 2)}</strong>
+        <strong>+{fmt(block.import_cost, 3)}</strong>
       </div>
       <div className="algo-pnl-row export">
         <span>Export</span>
         <span>{fmtJ(block.export_energy_J)}</span>
-        <strong>-{fmt(block.export_revenue, 2)}</strong>
+        <strong>-{fmt(block.export_revenue, 3)}</strong>
       </div>
     </div>
   );
@@ -942,11 +948,8 @@ function AlgorithmRunControls({
 
   return (
     <section className="algo-run-controls">
-      <div className="algo-section-heading">
-        <div>
-          <h3>Algorithm controls</h3>
-          <p>Run continuously, test one dispatch cycle, or export the current run.</p>
-        </div>
+      <div className="algo-control-status-row">
+        <span>Continuous dispatch status</span>
         <span className={`system-run-state ${running ? "running" : "stopped"}`}>
           {running ? "Running" : "Stopped"}
         </span>
@@ -1062,11 +1065,6 @@ function ModulePlotCard({
 
     return isLightTheme ? { ...line, color: darker[line.color] || line.color } : line;
   });
-  const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
-  const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
-  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#27134d";
-  const tooltipLabel = isLightTheme ? "#1a2333" : "#ffffff";
-
   const latestStats = {
     pv: [
       ["Vpv", data?.v_panel, "V"],
@@ -1123,53 +1121,14 @@ function ModulePlotCard({
         ))}
       </div>
 
-      <div className="smps-plot-wrapper">
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={history}>
-            <XAxis
-              dataKey="id"
-              hide
-            />
-            <YAxis
-              stroke={axisColor}
-              tick={{ fontSize: 11 }}
-              tickLine={false}
-              axisLine={false}
-              width={40}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: tooltipBackground,
-                borderColor: tooltipBorder,
-                borderRadius: "var(--radius-control)",
-              }}
-              labelStyle={{ color: tooltipLabel }}
-            />
-            {lines.map((line) => (
-              <Line
-                key={line.key}
-                type="monotone"
-                dataKey={line.key}
-                name={line.name}
-                stroke={line.color}
-                strokeWidth={2}
-                dot={false}
-                isAnimationActive={false}
-                connectNulls={false}
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      <div className="smps-plot-legend">
-        {lines.map((line) => (
-          <span key={line.key}>
-            <i style={{ background: line.color }} />
-            {line.name}
-          </span>
-        ))}
-      </div>
+      <UnifiedLineChart
+        data={history}
+        xKey="timestamp"
+        height={220}
+        theme={theme}
+        compact
+        lines={lines.map((line) => ({ ...line, label: line.name }))}
+      />
 
       {advanced && (
         <ModuleAdvancedPanel
@@ -1192,6 +1151,7 @@ export default function SMPS({
   activeAlgorithm,
   autoStatus,
   runCost,
+  onLiveData,
 }) {
   const [modules, setModules] = useState({});
   const [statuses, setStatuses] = useState({});
@@ -1286,43 +1246,28 @@ export default function SMPS({
 
   useEffect(() => {
     let cancelled = false;
+    let timerId;
 
     async function poll() {
       try {
-        const [modulesRes, statusesRes, snapshotsRes, pvRes, gridRes, exportRes, naiveRes, hostsRes] = await Promise.all([
-          fetch(`${apiBase}/modules/latest`),
+        const [modulesRes, statusesRes, naiveRes] = await Promise.all([
+          fetch(`${apiBase}/modules/latest`, { cache: "no-store" }),
           fetch(`${apiBase}/modules/status`, { cache: "no-store" }),
-          fetch(`${apiBase}/snapshots?limit=${OVERVIEW_LIMIT}`),
-          fetch(`${apiBase}/modules/snapshots/pv?limit=${OVERVIEW_LIMIT}`),
-          fetch(`${apiBase}/modules/snapshots/grid?limit=${OVERVIEW_LIMIT}`),
-          fetch(`${apiBase}/modules/snapshots/export?limit=${OVERVIEW_LIMIT}`),
-          fetch(`${apiBase}/algo/naive`),
-          fetch(`${apiBase}/algo/module-hosts`),
+          fetch(`${apiBase}/algo/naive`, { cache: "no-store" }),
         ]);
         if (!modulesRes.ok) return;
 
-        const [data, statusesData, snapshotsData, pvData, gridData, exportData, naiveData, hostsData] = await Promise.all([
+        const [data, statusesData, naiveData] = await Promise.all([
           modulesRes.json(),
-          statusesRes.ok ? statusesRes.json() : {},
-          snapshotsRes.ok ? snapshotsRes.json() : [],
-          pvRes.ok ? pvRes.json() : [],
-          gridRes.ok ? gridRes.json() : [],
-          exportRes.ok ? exportRes.json() : [],
+          statusesRes.ok ? statusesRes.json() : null,
           naiveRes.ok ? naiveRes.json() : null,
-          hostsRes.ok ? hostsRes.json() : {},
         ]);
         if (cancelled) return;
 
         setModules(data || {});
-        setStatuses(statusesData || {});
-        setOverviewData(buildOverviewSeries(
-          Array.isArray(snapshotsData) ? snapshotsData : [],
-          Array.isArray(pvData) ? pvData : [],
-          Array.isArray(gridData) ? gridData : [],
-          Array.isArray(exportData) ? exportData : [],
-        ));
+        if (statusesData) setStatuses(statusesData);
+        onLiveData?.(data || {}, statusesData);
         setNaive(naiveData && !naiveData.error ? naiveData : null);
-        setModuleHosts(hostsData?.hosts || {});
         if (naiveData && !naiveData.error && naiveData.algo_id) {
           setActiveAlgoId(naiveData.algo_id);
         }
@@ -1341,14 +1286,67 @@ export default function SMPS({
         ));
       } catch (err) {
         console.error("Failed to fetch module telemetry", err);
+      } finally {
+        if (!cancelled) {
+          timerId = window.setTimeout(poll, document.hidden ? 5000 : 1500);
+        }
       }
     }
 
     poll();
-    const id = setInterval(poll, 2000);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      window.clearTimeout(timerId);
+    };
+  }, [apiBase, onLiveData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timerId;
+
+    async function loadHistory() {
+      try {
+        const [snapshotsRes, pvRes, gridRes, exportRes, hostsRes] = await Promise.all([
+          fetch(`${apiBase}/snapshots?limit=${OVERVIEW_LIMIT}`),
+          fetch(`${apiBase}/modules/snapshots/pv?limit=${OVERVIEW_LIMIT}`),
+          fetch(`${apiBase}/modules/snapshots/grid?limit=${OVERVIEW_LIMIT}`),
+          fetch(`${apiBase}/modules/snapshots/export?limit=${OVERVIEW_LIMIT}`),
+          fetch(`${apiBase}/algo/module-hosts`),
+        ]);
+        const [snapshotsData, pvData, gridData, exportData, hostsData] = await Promise.all([
+          snapshotsRes.ok ? snapshotsRes.json() : null,
+          pvRes.ok ? pvRes.json() : null,
+          gridRes.ok ? gridRes.json() : null,
+          exportRes.ok ? exportRes.json() : null,
+          hostsRes.ok ? hostsRes.json() : null,
+        ]);
+        if (cancelled) return;
+
+        if (
+          Array.isArray(snapshotsData) &&
+          Array.isArray(pvData) &&
+          Array.isArray(gridData) &&
+          Array.isArray(exportData)
+        ) {
+          setOverviewData(buildOverviewSeries(
+            snapshotsData,
+            pvData,
+            gridData,
+            exportData,
+          ));
+        }
+        if (hostsData?.hosts) setModuleHosts(hostsData.hosts);
+      } catch (err) {
+        console.error("Failed to fetch telemetry history", err);
+      } finally {
+        if (!cancelled) timerId = window.setTimeout(loadHistory, 10000);
+      }
+    }
+
+    loadHistory();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
     };
   }, [apiBase]);
 
@@ -1357,8 +1355,11 @@ export default function SMPS({
       <OverviewGraphCard
         data={overviewData}
         theme={theme}
+      />
+      <BusOverviewCard
         vbus={getBusVoltage(modules)}
         busHistory={buildGlobalTelemetryHistory(hist)}
+        theme={theme}
         advanced={showAdvanced}
       />
       <NaiveDispatchCard

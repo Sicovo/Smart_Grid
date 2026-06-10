@@ -1,6 +1,6 @@
 from sqlalchemy import (
     create_engine, Column, Integer, BigInteger, Float, DateTime, String,
-    UniqueConstraint, text,
+    Index, UniqueConstraint, text,
 )
 import json
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -37,6 +37,10 @@ class GridSnapshot(Base):
 class ModuleSnapshot(Base):
     """Per-role telemetry from firmware modules (pv, grid, export, cap, led)."""
     __tablename__ = "module_snapshots"
+    __table_args__ = (
+        Index("ix_module_snapshots_role_id", "role", "id"),
+        Index("ix_module_snapshots_role_timestamp", "role", "timestamp"),
+    )
 
     id          = Column(Integer, primary_key=True, index=True)
     timestamp   = Column(DateTime, default=datetime.utcnow)
@@ -173,6 +177,16 @@ def init_db():
                     print(f"[db] migrated: added {table}.{column}")
                 except Exception as exc:
                     print(f"[db] migration warning for {table}.{column}: {exc}")
+        for index_sql in (
+            "CREATE INDEX IF NOT EXISTS ix_grid_snapshots_timestamp "
+            "ON grid_snapshots (timestamp)",
+            "CREATE INDEX IF NOT EXISTS ix_module_snapshots_role_id "
+            "ON module_snapshots (role, id)",
+            "CREATE INDEX IF NOT EXISTS ix_module_snapshots_role_timestamp "
+            "ON module_snapshots (role, timestamp)",
+        ):
+            conn.execute(text(index_sql))
+        conn.commit()
 
 def save_snapshot(state):
     db = SessionLocal()

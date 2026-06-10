@@ -457,6 +457,7 @@ def set_poller_source(payload: dict):
 
 @app.get("/snapshots")
 def get_snapshots(limit: int = 50):
+    limit = max(1, min(int(limit), 500))
     db = SessionLocal()
 
     rows = (
@@ -603,6 +604,9 @@ def get_module_latest(role: str):
 
 @app.get("/modules/snapshots/{role}")
 def get_module_snapshots(role: str, limit: int = 60):
+    if role not in MODULE_CMD_TARGETS:
+        raise HTTPException(status_code=404, detail=f"Unknown module role: {role}")
+    limit = max(1, min(int(limit), 500))
     db = SessionLocal()
     rows = (
         db.query(ModuleSnapshot)

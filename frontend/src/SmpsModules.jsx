@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-} from "recharts";
+import UnifiedLineChart from "./UnifiedLineChart";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -89,7 +81,7 @@ const MOD_CHART_LINES = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(v, digits = 2) {
+function fmt(v, digits = 3) {
   if (v === null || v === undefined || (typeof v === "number" && Number.isNaN(v))) {
     return "—";
   }
@@ -99,14 +91,6 @@ function fmt(v, digits = 2) {
 
 function safeNumber(v) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
-function normaliseHost(raw) {
-  let h = String(raw || "").trim();
-  if (!h) return "";
-  if (!h.startsWith("http")) h = `http://${h}`;
-  if (h.endsWith("/")) h = h.slice(0, -1);
-  return h;
 }
 
 function firstHost(raw) {
@@ -193,7 +177,7 @@ function StatusLine({ status }) {
   const online = status?.online === true;
   const age =
     status?.age_s !== null && status?.age_s !== undefined && Number.isFinite(Number(status.age_s))
-      ? ` · age ${Number(status.age_s).toFixed(1)}s`
+      ? ` · age ${Number(status.age_s).toFixed(3)}s`
       : "";
   const last = status?.last_seen ? ` · last ${status.last_seen}` : "";
 
@@ -206,7 +190,7 @@ function StatusLine({ status }) {
   );
 }
 
-function Stat({ label, val, unit, digits = 2, tag = "", sub = "", wide = false }) {
+function Stat({ label, val, unit, digits = 3, tag = "", sub = "", wide = false }) {
   return (
     <div className={`smps-stat ${wide ? "smps-stat-wide" : ""}`} data-tag={tag || undefined}>
       <div className="smps-stat-label">{label}</div>
@@ -231,7 +215,7 @@ export function BusGauge({ vbus }) {
     <div className="smps-gauge">
       <div className="smps-gauge-top">
         <div className="smps-gauge-v">
-          <b>{vbus === null ? "--.--" : vbus.toFixed(2)}</b>
+          <b>{vbus === null ? "--.---" : vbus.toFixed(3)}</b>
           <span>V bus</span>
         </div>
         <div className="smps-gauge-state">{busState(vbus)}</div>
@@ -258,15 +242,14 @@ export function BusGauge({ vbus }) {
   );
 }
 
-export function GlobalChart({ data, theme = "dark" }) {
+export function GlobalChart({
+  data,
+  theme = "dark",
+}) {
   const [visible, setVisible] = useState(() =>
     Object.fromEntries(GLOBAL_LINES.map((l) => [l.key, true]))
   );
   const isLightTheme = theme === "light";
-  const axisColor = isLightTheme ? "#38475f" : "#666";
-  const tooltipBackground = isLightTheme ? "#ffffff" : "#0d0d0d";
-  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#2c2c2c";
-  const tooltipText = isLightTheme ? "#1a2333" : "#e6e6e6";
   const referenceColor = isLightTheme ? "#4b6b98" : "#5a8ec9";
   const lineColors = isLightTheme
     ? {
@@ -280,61 +263,25 @@ export function GlobalChart({ data, theme = "dark" }) {
     : Object.fromEntries(GLOBAL_LINES.map((l) => [l.key, l.color]));
 
   return (
-    <div className="smps-global-chart">
-      <div className="smps-chart-head">
-        <div className="smps-chart-title">Last 60 s</div>
-        <div className="smps-chart-legend">
-          {GLOBAL_LINES.map((l) => (
-            <button
-              key={l.key}
-              className={`smps-legend-toggle ${visible[l.key] ? "on" : ""}`}
-              onClick={() => setVisible((p) => ({ ...p, [l.key]: !p[l.key] }))}
-            >
-              <span className="smps-swatch" style={{ background: lineColors[l.key] }} />
-              {l.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="smps-chart-box">
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: -16 }}>
-            <XAxis dataKey="t" tick={{ fontSize: 10, fill: axisColor }} />
-            <YAxis tick={{ fontSize: 10, fill: axisColor }} width={42} />
-            <Tooltip
-              contentStyle={{
-                background: tooltipBackground,
-                border: `1px solid ${tooltipBorder}`,
-                borderRadius: "var(--radius-control)",
-                fontSize: 11,
-              }}
-              itemStyle={{ color: tooltipText }}
-            />
-            <ReferenceLine y={9.5} stroke={referenceColor} strokeDasharray="3 3" />
-            <ReferenceLine y={10.5} stroke={referenceColor} strokeDasharray="3 3" />
-
-            {GLOBAL_LINES.filter((l) => visible[l.key]).map((l) => (
-              <Line
-                key={l.key}
-                type="linear"
-                dataKey={l.key}
-                name={l.label}
-                stroke={lineColors[l.key]}
-                strokeWidth={l.axis === "V" ? 2 : 1.5}
-                dot={false}
-                connectNulls={false}
-                isAnimationActive={false}
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      <div className="smps-chart-foot">
-        left axis mixed: V and A · main reference: Vbus deadband 9.5–10.5 V
-      </div>
-    </div>
+    <UnifiedLineChart
+      data={data}
+      xKey="t"
+      height={220}
+      theme={theme}
+      visible={visible}
+      onToggleLine={(key) => setVisible((prev) => ({ ...prev, [key]: !prev[key] }))}
+      referenceLines={[
+        { value: 9.5, color: referenceColor },
+        { value: 10.5, color: referenceColor },
+      ]}
+      lines={GLOBAL_LINES.map((line) => ({
+        ...line,
+        color: lineColors[line.key],
+        width: line.axis === "V" ? 2 : 1.5,
+        axis: "left",
+      }))}
+      footnote="Mixed V and A scale · Vbus deadband 9.500–10.500 V"
+    />
   );
 }
 
@@ -358,7 +305,7 @@ function PVStats({ d }) {
         label="Irradiance"
         val={irrPct}
         unit="%"
-        digits={0}
+        digits={3}
         tag="sun"
         sub={d.web_tick !== undefined && d.web_tick !== null ? `server tick ${d.web_tick}` : "no fetch yet"}
       />
@@ -431,12 +378,12 @@ function CapStats({ d }) {
       <Stat label="Pcap 3s avg" val={d.p_avg3s} unit="W" digits={3} sub="resets on i_cmd change" />
       <Stat label="i_cmd" val={d.i_cmd} unit="A" digits={3} sub={cmdSub} />
       <Stat label="Direction" val={dir} tag="cap" />
-      <Stat label="Energy stored" val={d.energy_J} unit="J" digits={1} />
+      <Stat label="Energy stored" val={d.energy_J} unit="J" digits={3} />
 
       <div className="smps-stat smps-stat-wide" data-tag="cap">
         <div className="smps-stat-label">State of charge</div>
         <div className="smps-stat-val">
-          {fmt(d.soc_pct, 0)}
+          {fmt(d.soc_pct, 3)}
           <span className="smps-stat-unit"> %</span>
         </div>
         <div className="smps-soc-track">
@@ -469,9 +416,9 @@ function LEDStats({ d, lastBusVoltage }) {
         {["red", "yel", "grn"].map((c) => (
           <div key={c} className="smps-led-row">
             <span className={`smps-led-color smps-led-${c}`}>{c.toUpperCase()}</span>
-            <span>{fmt(d[`i_${c}`], 2)} A</span>
-            <span>{fmt(d[`v_${c}`], 2)} V</span>
-            <span>{fmt(d[`p_${c}`], 2)} W</span>
+            <span>{fmt(d[`i_${c}`], 3)} A</span>
+            <span>{fmt(d[`v_${c}`], 3)} V</span>
+            <span>{fmt(d[`p_${c}`], 3)} W</span>
           </div>
         ))}
       </div>
@@ -740,8 +687,8 @@ function CapCycleTest({ onCmd, data }) {
   };
 
   const phase = data?.test_phase || "idle";
-  const f = (x, d = 2) => (typeof x === "number" && Number.isFinite(x) ? x.toFixed(d) : "—");
-  const pct = (x) => (typeof x === "number" && Number.isFinite(x) ? (100 * x).toFixed(1) : "—");
+  const f = (x, d = 3) => (typeof x === "number" && Number.isFinite(x) ? x.toFixed(d) : "—");
+  const pct = (x) => (typeof x === "number" && Number.isFinite(x) ? (100 * x).toFixed(3) : "—");
 
   return (
     <div className="smps-cycle">
@@ -834,7 +781,7 @@ function CapControls({ d, onCmd }) {
         />
         <span className="smps-now">
           {icmd >= 0 ? "+" : ""}
-          {icmd.toFixed(2)} A
+          {icmd.toFixed(3)} A
         </span>
         <Btn onClick={() => onCmd({ i_cmd: icmd })}>Apply</Btn>
       </CtrlRow>
@@ -878,7 +825,7 @@ function LEDControls({ onCmd }) {
             value={p[c]}
             onChange={(e) => update(c, parseFloat(e.target.value))}
           />
-          <span className="smps-now">{p[c].toFixed(2)} W</span>
+          <span className="smps-now">{p[c].toFixed(3)} W</span>
           <Btn onClick={() => onCmd({ [`p_${c}`]: p[c] })}>Apply</Btn>
         </CtrlRow>
       ))}
@@ -987,10 +934,6 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage, 
 
     return isLightTheme ? { ...line, color: darker[line.color] || line.color } : line;
   });
-  const axisColor = isLightTheme ? "#38475f" : "#555";
-  const tooltipBackground = isLightTheme ? "#ffffff" : "#0d0d0d";
-  const tooltipBorder = isLightTheme ? "#cfd9e8" : "#2c2c2c";
-  const tooltipText = isLightTheme ? "#1a2333" : "#e6e6e6";
 
   const stats = {
     pv: <PVStats d={data} />,
@@ -1057,46 +1000,14 @@ function ModuleCard({ role, data, status, history, host, onCmd, lastBusVoltage, 
         <div className="smps-offline-msg">No telemetry — module offline</div>
       )}
 
-      <div className="smps-mini-chart">
-        <ResponsiveContainer width="100%" height={112}>
-          <LineChart data={history} margin={{ top: 6, right: 10, bottom: 0, left: -18 }}>
-            <XAxis hide />
-            <YAxis tick={{ fontSize: 9, fill: axisColor }} width={36} />
-            <Tooltip
-              contentStyle={{
-                background: tooltipBackground,
-                border: `1px solid ${tooltipBorder}`,
-                borderRadius: "var(--radius-control)",
-                fontSize: 11,
-              }}
-              itemStyle={{ color: tooltipText }}
-            />
-            {lines.map((l) => (
-              <Line
-                key={l.key}
-                type="linear"
-                dataKey={l.key}
-                name={l.label}
-                stroke={l.color}
-                strokeWidth={1.5}
-                strokeDasharray={l.dashed ? "4 3" : undefined}
-                dot={false}
-                connectNulls={false}
-                isAnimationActive={false}
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-
-        <div className="smps-mini-legend">
-          {lines.map((l) => (
-            <span key={l.key}>
-              <span className="smps-swatch" style={{ background: l.color }} />
-              {l.label}
-            </span>
-          ))}
-        </div>
-      </div>
+      <UnifiedLineChart
+        data={history}
+        xKey="t"
+        height={150}
+        theme={theme}
+        compact
+        lines={lines}
+      />
 
       <div className="smps-controls">{controls}</div>
     </div>
