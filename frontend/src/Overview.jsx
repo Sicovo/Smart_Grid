@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Routes, Route, Link, Navigate } from "react-router-dom";
-import { DotLottieReact } from "@lottiefiles/dotlottie-react";
 import {
   XAxis,
   Tooltip,
@@ -243,7 +242,7 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
         </aside>
 
         <main className="main-content">
-          {activeView === "energy" && (
+          {/* {activeView === "energy" && (
             <div className="hero-octopus">
               <DotLottieReact
                 src="/porthole.lottie"
@@ -252,7 +251,7 @@ function DashboardLayout({ theme, onToggleTheme, initialView = "energy" }) {
                 className="hero-octopus-lottie"
               />
             </div>
-          )}
+          )} */}
 
           {activeView === "overview" ? (
             <div className="dashboard-container">
@@ -329,13 +328,13 @@ function HomeContent({
         </p>
       </div>
 
-      <div className="tabs-container">
+      {/* <div className="tabs-container">
         <div className="tab active">Day</div>
         <div className="tab">Week</div>
         <div className="tab">Month</div>
         <div className="tab">Year</div>
         <div className="tab">Custom</div>
-      </div>
+      </div> */}
 
       <OperationalSummary
         activeAlgorithm={activeAlgorithm}

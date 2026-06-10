@@ -127,9 +127,9 @@ function getBusVoltage(modules) {
 
 function busState(vbus) {
   if (vbus === null) return "no telemetry";
-  if (vbus < 9.5) return "← grid importing";
-  if (vbus > 10.5) return "export dissipating →";
-  return "idle deadband";
+  if (vbus < 9.5) return "Grid importing";
+  if (vbus > 10.5) return "Export dissipating";
+  return "Within deadband";
 }
 
 function makeGlobalSample(modules) {
@@ -221,7 +221,7 @@ function Stat({ label, val, unit, digits = 2, tag = "", sub = "", wide = false }
 
 // ─── Top bus gauge and global chart ──────────────────────────────────────────
 
-function BusGauge({ vbus }) {
+export function BusGauge({ vbus }) {
   const pct = vbus === null ? 0 : ((vbus - GAUGE_LO) / (GAUGE_HI - GAUGE_LO)) * 100;
   const clamped = Math.max(0, Math.min(100, pct));
   const dbLeft = ((9.5 - GAUGE_LO) / (GAUGE_HI - GAUGE_LO)) * 100;
@@ -231,7 +231,8 @@ function BusGauge({ vbus }) {
     <div className="smps-gauge">
       <div className="smps-gauge-top">
         <div className="smps-gauge-v">
-          <b>{vbus === null ? "--.--" : vbus.toFixed(2)}</b>V bus
+          <b>{vbus === null ? "--.--" : vbus.toFixed(2)}</b>
+          <span>V bus</span>
         </div>
         <div className="smps-gauge-state">{busState(vbus)}</div>
       </div>
@@ -257,7 +258,7 @@ function BusGauge({ vbus }) {
   );
 }
 
-function GlobalChart({ data, theme = "dark" }) {
+export function GlobalChart({ data, theme = "dark" }) {
   const [visible, setVisible] = useState(() =>
     Object.fromEntries(GLOBAL_LINES.map((l) => [l.key, true]))
   );
@@ -334,32 +335,6 @@ function GlobalChart({ data, theme = "dark" }) {
         left axis mixed: V and A · main reference: Vbus deadband 9.5–10.5 V
       </div>
     </div>
-  );
-}
-
-export function SmpsSystemAdvancedPanel({
-  modules,
-  history,
-  theme = "dark",
-  onSetAllEnabled,
-}) {
-  return (
-    <section className="smps-system-advanced">
-      <div className="smps-system-advanced-head">
-        <div>
-          <h3>Live bus diagnostics</h3>
-          <p>Raw module telemetry, bus deadband, and combined current traces.</p>
-        </div>
-        <div className="smps-quickbar">
-          <Btn onClick={() => onSetAllEnabled(true)}>Enable all modules</Btn>
-          <Btn variant="danger" onClick={() => onSetAllEnabled(false)}>
-            Disable all modules
-          </Btn>
-        </div>
-      </div>
-      <BusGauge vbus={getBusVoltage(modules)} />
-      <GlobalChart data={history} theme={theme} />
-    </section>
   );
 }
 

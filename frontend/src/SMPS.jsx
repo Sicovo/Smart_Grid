@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
-import { ModuleAdvancedPanel, SmpsSystemAdvancedPanel } from "./SmpsModules";
+import { BusGauge, GlobalChart, ModuleAdvancedPanel } from "./SmpsModules";
 
 const ROLES = ["pv", "grid", "export", "cap", "led"];
 const ROLE_COLUMNS = [
@@ -210,11 +210,17 @@ function buildOverviewSeries(gridSnapshots, pvHistory, gridHistory, exportHistor
   });
 }
 
-function OverviewGraphCard({ data, theme = "dark" }) {
+function OverviewGraphCard({
+  data,
+  theme = "dark",
+  vbus = null,
+  busHistory = [],
+  advanced = false,
+}) {
   const latest = data[data.length - 1];
   const isLightTheme = theme === "light";
   const axisColor = isLightTheme ? "#38475f" : "#a69ec4";
-  const titleColor = isLightTheme ? "#12325f" : "#00f0ff";
+  const titleColor = isLightTheme ? "#182235" : "#ffffff";
   const tooltipBackground = isLightTheme ? "#ffffff" : "#14052e";
   const tooltipBorder = isLightTheme ? "#cfd9e8" : "#27134d";
   const tooltipLabel = isLightTheme ? "#1a2333" : "#ffffff";
@@ -258,6 +264,16 @@ function OverviewGraphCard({ data, theme = "dark" }) {
           <p>Import / Export</p>
           <h3>{latest ? `${fmt(latest.cumulative_import_J, 0)} / ${fmt(latest.cumulative_export_J, 0)} J` : "—"}</h3>
         </div>
+      </div>
+
+      <div className="smps-overview-bus">
+        <div className="smps-overview-section-heading">
+          <div>
+            <h3>Live bus</h3>
+            <p>Current bus voltage against the 9.5–10.5 V operating deadband.</p>
+          </div>
+        </div>
+        <BusGauge vbus={vbus} />
       </div>
 
       <div className="smps-plot-wrapper">
@@ -306,6 +322,12 @@ function OverviewGraphCard({ data, theme = "dark" }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+
+      {advanced && (
+        <div className="smps-overview-bus-chart">
+          <GlobalChart data={busHistory} theme={theme} />
+        </div>
+      )}
     </section>
   );
 }
@@ -1262,17 +1284,6 @@ export default function SMPS({
     }
   }
 
-  async function setAllModulesEnabled(enabled) {
-    await Promise.all(
-      ROLES.map((role) =>
-        sendModuleCommand(role, {
-          enable: enabled ? 1 : 0,
-          ...(role === "cap" && !enabled ? { i_cmd: 0 } : {}),
-        })
-      )
-    );
-  }
-
   useEffect(() => {
     let cancelled = false;
 
@@ -1343,15 +1354,13 @@ export default function SMPS({
 
   return (
     <div className="smps-plots-page">
-      <OverviewGraphCard data={overviewData} theme={theme} />
-      {showAdvanced && (
-        <SmpsSystemAdvancedPanel
-          modules={modules}
-          history={buildGlobalTelemetryHistory(hist)}
-          theme={theme}
-          onSetAllEnabled={setAllModulesEnabled}
-        />
-      )}
+      <OverviewGraphCard
+        data={overviewData}
+        theme={theme}
+        vbus={getBusVoltage(modules)}
+        busHistory={buildGlobalTelemetryHistory(hist)}
+        advanced={showAdvanced}
+      />
       <NaiveDispatchCard
         apiBase={apiBase}
         naive={naive}

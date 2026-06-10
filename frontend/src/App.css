@@ -1949,6 +1949,9 @@ body[data-theme="light"] .smps-route-content.smps-standalone-page .smps-root {
 }
 
 .smps-gauge-v {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   color: #a69ec4;
   font-size: 14px;
 }
@@ -1958,7 +1961,7 @@ body[data-theme="light"] .smps-route-content.smps-standalone-page .smps-root {
   font-size: 32px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  margin-right: 6px;
+  margin-right: 0;
 }
 
 .smps-gauge-state {
@@ -3036,50 +3039,118 @@ body[data-theme="light"] .system-summary-card > span:last-child {
   margin-top: 0;
 }
 
-.smps-system-advanced {
+.smps-overview-bus {
   display: grid;
-  gap: 12px;
-  padding: 18px;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 14px;
   border: 1px solid var(--surface-border);
-  border-radius: var(--radius-surface);
-  background: var(--surface-main);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
 }
 
-.smps-system-advanced-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.smps-system-advanced-head h3 {
+.smps-overview-section-heading h3 {
   margin: 0;
   color: #ffffff;
-  font-size: 17px;
+  font-size: 15px;
 }
 
-.smps-system-advanced-head p {
-  margin: 4px 0 0;
+.smps-overview-section-heading p {
+  margin: 3px 0 0;
   color: #a69ec4;
   font-size: 11px;
 }
 
-.smps-system-advanced .smps-gauge,
-.smps-system-advanced .smps-global-chart {
+.smps-overview-bus .smps-gauge {
   margin: 0;
+  padding: 0;
+  background: transparent;
 }
 
-body[data-theme="light"] .smps-system-advanced {
-  background: #ffffff;
+.smps-overview-bus .smps-gauge-v {
+  font-size: 11px;
+}
+
+.smps-overview-bus .smps-gauge-v b {
+  font-size: 22px;
+}
+
+.smps-overview-bus .smps-gauge-state {
+  font-size: 11px;
+}
+
+.smps-overview-bus .smps-gauge-bar {
+  height: 12px;
+  border-color: var(--surface-border);
+  background: #100725;
+}
+
+.smps-overview-bus .smps-gauge-marker {
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  background: #5b4df6;
+  box-shadow: 0 0 8px rgba(91, 77, 246, 0.5);
+}
+
+.smps-overview-bus .smps-gauge-deadband {
+  background: rgba(91, 77, 246, 0.18);
+  border-color: #8176ff;
+}
+
+.smps-overview-bus-chart {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--surface-border);
+}
+
+.smps-overview-bus-chart .smps-global-chart {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.smps-overview-bus-chart .smps-chart-title {
+  font-size: 15px;
+}
+
+.smps-overview-bus-chart .smps-chart-box {
+  background: #190b45;
+  border-color: var(--surface-border);
+}
+
+.smps-overview-bus-chart .smps-legend-toggle {
+  padding: 5px 8px;
+  border-color: var(--surface-border);
+  background: var(--surface-subtle);
+  font-size: 10px;
+}
+
+.smps-overview-bus-chart .smps-legend-toggle.on {
+  background: var(--surface-raised);
+}
+
+body[data-theme="light"] .smps-overview-bus {
+  background: #f5f8fd;
   border-color: #dce4f2;
 }
 
-body[data-theme="light"] .smps-system-advanced-head h3 {
+body[data-theme="light"] .smps-overview-section-heading h3 {
   color: #182235;
 }
 
-body[data-theme="light"] .smps-system-advanced-head p {
+body[data-theme="light"] .smps-overview-section-heading p {
   color: #4f5f7c;
+}
+
+body[data-theme="light"] .smps-overview-bus .smps-gauge-bar {
+  background: #e6ebf4;
+  border-color: #dce4f2;
+}
+
+body[data-theme="light"] .smps-overview-bus-chart .smps-chart-box {
+  background: #f5f8fd;
+  border-color: #dce4f2;
 }
 
 body[data-theme="light"] .algorithm-compact-grid > div {
@@ -3976,16 +4047,6 @@ body[data-theme="light"] .smps-modules-page .smps-gauge-bar {
   .smps-inline-advanced .smps-slider {
     width: 100%;
     min-width: 140px;
-  }
-
-  .smps-system-advanced-head {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .smps-system-advanced-head .smps-quickbar,
-  .smps-system-advanced-head .smps-btn {
-    width: 100%;
   }
 
   .algorithm-card-header {
