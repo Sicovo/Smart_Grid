@@ -981,11 +981,100 @@ Import SMPS (Section 5.3.2): manual measurement using the bench PSU's built-in c
 Export SMPS (Section 5.3.1): mirrors the import procedure but with the DMM in series on the bus-to-export wire (the firmware shunt sits on the resistor side), so $P_("dissipated")$ is from firmware and $P_("bus,drawn") = V_("bus") dot I_("DMM")$. The sweep grid and headline numbers are in Section 5.3.1. Under the dual-meter framework (Section 2.3) this efficiency governs the dashboard-vs-meter gap rather than entering the cost formula directly: the bus meter credits the bus-side export at $p_("buy")$, while the dashboard's post-loss telemetry under-reports that revenue by the conversion loss.
 
 === Communication & Integration Tests
+// ---------- Smart V1 latency bar chart helper ----------
 
-Azure Tick Acquisition
-Telemetry Collection
-End-to-End Command Path [Azure Update->CMD Sent->Execution]
-Module Disconnect & Recovery?
+#let bar-chart(data, max-val: 1000) = {
+  let chart-width = 280pt
+  let label-width = 115pt
+  let value-width = 45pt
+  let bar-height = 13pt
+  let gap = 8pt
+
+  stack(
+    dir: ttb,
+    spacing: gap,
+    ..data.map(item => {
+      let name = item.at(0)
+      let value = item.at(1)
+      let width = chart-width * value / max-val
+
+      grid(
+        columns: (label-width, chart-width, value-width),
+        column-gutter: 8pt,
+        align: (right, left, left),
+
+        [#text(size: 8pt)[#name]],
+
+        [
+          #rect(
+            width: width,
+            height: bar-height,
+            fill: rgb("#4f6f8f"),
+            radius: 2pt,
+          )
+        ],
+
+        [#text(size: 8pt)[#value ms]],
+      )
+    })
+  )
+}
+
+
+// ---------- Figure: median latency breakdown ----------
+
+#figure(
+  align(center)[
+    #bar-chart((
+      ("State acquisition", 471),
+      ("Smart V1 decision", 2),
+      ("Command dispatch RTT", 307),
+      ("Pico control adoption", 4),
+      ("Telemetry confirmation", 942),
+    ))
+  ],
+  caption: [Median Smart V1 latency breakdown across the 20-point dataset.]
+)
+
+
+// ---------- Table: latency summary ----------
+
+#figure(
+  table(
+    columns: (1.8fr, 1fr),
+    inset: 6pt,
+    align: (left, right),
+    stroke: 0.5pt,
+    fill: (x, y) => if y == 0 { rgb("#4f6f8f") } else { none },
+
+    [*Metric*], [*Value*],
+    [Dataset size], [20 traces],
+    [Mean end-to-end latency], [1450 ms],
+    [Median end-to-end latency], [1417 ms],
+    [Minimum end-to-end latency], [597 ms],
+    [Maximum end-to-end latency], [2797 ms],
+    [95th percentile end-to-end latency], [2271 ms],
+    [Median Azure HTTP fetch latency], [348 ms],
+    [Median state acquisition latency], [471 ms],
+    [Median Smart V1 decision latency], [2.1 ms],
+    [Median command dispatch RTT], [307 ms],
+    [Median Pico control adoption latency], [4.0 ms],
+    [Median telemetry confirmation latency], [942 ms],
+    [Median total latency including Azure fetch], [1759 ms],
+  ),
+  caption: [Summary statistics for Smart V1 end-to-end latency across the 20-point dataset.]
+)
+
+
+// ---------- Report text ----------
+
+A set of latency data was captured using an autonomous script during Smart V1 operation. After removing incomplete or invalid traces, a 20-point dataset remained for analysis. Each trace was associated with a unique trace identifier, allowing the same control event to be tracked from Azure tick acquisition, through Smart V1 decision generation and command dispatch, to Pico control-loop adoption and telemetry confirmation.
+
+Across the 20 traces, the median end-to-end latency from backend detection of a new Azure tick to telemetry confirmation was 1417 ms, with a mean of 1450 ms. The minimum and maximum measured end-to-end latencies were 597 ms and 2797 ms respectively, while the 95th percentile was 2271 ms. Including the initial Azure HTTP fetch stage, the median total latency was 1759 ms.
+
+The latency breakdown shows that Smart V1 computation and embedded control adoption were not significant contributors to the total delay. The median Smart V1 decision time was 2.1 ms, and the Pico control loop adopted the received command in 4.0 ms. In contrast, state acquisition, command dispatch and telemetry confirmation required median latencies of 471 ms, 307 ms and 942 ms respectively.
+
+This indicates that the remaining delay in the system was dominated by communication and telemetry handling rather than algorithm execution or low-level embedded control response. The test therefore confirms that the full Azure-to-backend-to-SMPS command path operated successfully under autonomous Smart V1 control, while also identifying the communication path as the main target for future optimisation.
 
 == Performance Metrics
 
