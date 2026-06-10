@@ -122,11 +122,11 @@
 ]
 #v(0.3cm)
 
-The Smart Grid is a DC microgrid built from five cooperating SMPS modules. It balances generation, storage and load on a shared 10V bus while minimising net grid cost through import, export and supercapacitor charge or discharge. Each converter regulates its own current flow against a local bus measurement, with a central coordinator setting dispatch commands. The system operates from a 12V primary supply onto a 10V bus with a ±0.1V droop band, allowing each module to act autonomously on the bus voltage signal. A Pico W on every module runs the control loop and provides INA219 or SPI ADC readings to a user-facing dashboard. A 3D-printed chassis houses the SMPS boards for airflow and mechanical protection.
+The Smart Grid is a DC microgrid built from five cooperating SMPS modules. It balances generation, storage and load on a shared 10V bus while minimising net grid cost through import, export and supercapacitor charge or discharge. Each converter regulates its own current flow against a local bus measurement, with a central coordinator setting dispatch commands. The system operates from a 12V primary supply onto a 10V bus with a ±0.1V droop band, allowing each module to act autonomously on the bus voltage signal. A Pico W on every module runs the control loop and feeds INA219 or SPI ADC readings to an operator dashboard. The dispatch algorithm schedules deferrable loads and supercapacitor cycles around price forecasts, beating the naive baseline by 20% in lab runs and by a mean of 28% across 1000 simulated days. A chassis printed in 3D houses the SMPS boards for airflow and mechanical protection.
 
 #v(0.5cm)
 #align(center)[
-  #text(size: 10pt, style: "italic")[Word count: #text(weight: "bold")[11628]]
+  #text(size: 10pt, style: "italic")[Word count: #text(weight: "bold")[11946]]
 ]
 
 #pagebreak()
@@ -292,13 +292,13 @@ The binding constraint is dropout, not efficiency: with $D = V_("bus") / V_("in"
 
 == Coordination Scheme: Symmetric Droop vs Mutex Arbitration <sec:2-4>
 
-Two architectures were considered. Mutex arbitration assigns bus control to one module at a time, with a coordinator switching modes as conditions change; symmetric droop, the established primary-control approach for DC microgrids @dragicevic_dcmg_2016, lets every module act at once on its local $V_("bus")$ measurement. Mutex gives tighter steady-state regulation, but it places the communication channel inside the safety-critical bus-regulation loop — a dropped link or stalled coordinator collapses the bus — and every handover adds a voltage transient. Droop keeps each loop local and continuous: a communications failure degrades the economic optimisation but not bus stability, the curves blend without handover transients, and the cost is a small steady-state error bounded to ±0.1V by design (@sec:2-3).
+Two architectures were considered. Mutex arbitration assigns bus control to one module at a time, with a coordinator switching modes as conditions change; symmetric droop, the established primary-control approach for DC microgrids @dragicevic_dcmg_2016, lets every module act at once on its local $V_("bus")$ measurement. Mutex gives tighter steady-state regulation, but it places the communication channel inside the safety-critical bus-regulation loop (a dropped link or stalled coordinator collapses the bus), and every handover adds a voltage transient. Droop keeps each loop local and continuous: a communications failure degrades the economic optimisation but not bus stability, the curves blend without handover transients, and the cost is a small steady-state error bounded to ±0.1V by design (@sec:2-3).
 
 Symmetry is enforced by mirroring the import and export setpoints about the 10V nominal:
 
 $ V_("set,import") = 9.9 "V" quad quad V_("set,export") = 10.1 "V" $
 
-This creates a dead-band $V_("bus") in [9.9, 10.1]$V in which neither import and export module acts and the bus is held by the PV module and supercapacitor alone — the no-cost configuration the algorithm in @sec:9 maximises. Outside it, the system falls back to grid import or export with no explicit mode-change logic. @fig:droop-curves and @fig:busbar-deadband show the droop curves and a load cycle moving between import, dead-band and export regimes without central arbitration.
+This creates a dead-band $V_("bus") in [9.9, 10.1]$V in which neither import and export module acts and the bus is held by the PV module and supercapacitor alone, the no-cost configuration the algorithm in @sec:9 maximises. Outside it, the system falls back to grid import or export with no explicit mode-change logic. @fig:droop-curves and @fig:busbar-deadband show the droop curves and a load cycle moving between import, dead-band and export regimes without central arbitration.
 
 #figure(
   image("images/droop_curves.png", width: 85%),
@@ -688,7 +688,7 @@ Noise on the power readings was bad, obscuring the operating-point comparisons S
 
 == Hardware Averaging <sec:7-1>
 
-The bidirectional template inherits an INA219 CONFIG register of 0x199F (12-bit, single-sample, 532 μs conversion @ti_ina219), which lets most of the switching ripple through unaveraged on the current-sense shunt. Reprogramming to 0x1E67 (16-sample averaging, 8.51 ms conversion) across all four modules clears this, in which the longer conversion time is still over twenty times faster than the slowest downstream consumer — the supercapacitor's 200 ms OCV window (@sec:4-2), so no process is kept waiting. PV and supercapacitor pick this up through identical edits to their inline `ina_init` functions, and import and export through a single edit to the shared `INA219` class.
+The bidirectional template inherits an INA219 CONFIG register of 0x199F (12-bit, single-sample, 532 μs conversion @ti_ina219), which lets most of the switching ripple through unaveraged on the current-sense shunt. Reprogramming to 0x1E67 (16-sample averaging, 8.51 ms conversion) across all four modules clears this, in which the longer conversion time is still over twenty times faster than the slowest downstream consumer, the supercapacitor's 200 ms OCV window (@sec:4-2), so no process is kept waiting. PV and supercapacitor pick this up through identical edits to their inline `ina_init` functions, and import and export through a single edit to the shared `INA219` class.
 
 Voltage channels are read by the Pico's onboard 12-bit ADC @rpi_rp2040 through a resistive divider and vary by several LSBs sample-to-sample regardless of INA219 settings. Each `read_va` and `read_vb` call performs four single reads and right-shifts the sum by two to take the mean:
 
@@ -814,7 +814,7 @@ As a final redundancy, a single-file dashboard is bundled into the firmware file
 // ----- 9. Algorithm Software (~1000 words) -------------------
 = Algorithm Software <sec:9>
 
-The per-module loops of Sections 3 to 6 keep the bus stable; this section covers the coordinator that decides what each module should be doing. The coordinator runs one of two policies: a reactive naive baseline that the brief asks the smart policy to beat, and a forecast-aware Smart V1 that schedules deferrable loads into cheap ticks and charges the supercapacitor cheaply to discharge it into the evening price spike. Both are evaluated on the same grid under the same scripted day, and the smart policy delivers a 20% net-cost saving averaged across two lab runs.
+The per-module loops of Sections 3 to 6 keep the bus stable; this section covers the coordinator that decides what each module should be doing. The coordinator runs one of two policies: a reactive naive baseline that the brief asks the smart policy to beat, and a forecast-aware Smart V1 that schedules deferrable loads into cheap ticks and charges the supercapacitor cheaply to discharge it into the evening price spike. Both are evaluated on the same grid under the same scripted day, where the smart policy delivers a 20% net-cost saving averaged across two lab runs, and offline across 1000 simulated days, where it saves a mean of 28% and wins on every day.
 
 == Coordinator Loop and Economic Objective <sec:9-1>
 
@@ -877,6 +877,31 @@ Each policy was run on the grid against the same fixed price, demand and irradia
   image("images/algo_price_band.png", width: 92%),
   caption: [Imported energy by sell-price band: smart shifts imports into the cheap band.],
 ) <fig:algo_price_band>
+
+== Backtest on 1000 Simulated Days <sec:9-backtest>
+
+The two lab runs sample a single scripted day, so both policies were also replayed offline over the 1000 randomly generated days in `datasets.json` to check that the saving holds across price profiles. The replay applies the same physical model as the firmware: PV follows the deterministic sun profile, the supercapacitor carries 90% SMPS efficiency in each direction with 0.25% leakage per tick, the LED load is clamped at 9W, droop closes the bus balance, and any deferrable energy left unserved at the end of a day is charged at that day's mean sell price.
+
+#figure(
+  image("images/algo_backtest_hist.png", width: 92%),
+  caption: [Distribution of daily saving of Smart V1 over naive across 1000 days.],
+) <fig:algo_backtest_hist>
+
+#protable(
+  caption: [Smart V1 vs naive backtest summary over 1000 simulated days.],
+  columns: (1.6fr, 1fr),
+  align: (left + horizon, center + horizon),
+  [*Metric*], [*Value*],
+  [Mean daily saving], [28.1%],
+  [Median daily saving], [27.9%],
+  [Standard deviation], [7.3%],
+  [Worst day / best day], [6.8% / 58.9%],
+  [5th to 95th percentile], [16.9% to 41.0%],
+  [Days where Smart V1 wins], [1000 of 1000],
+  [Aggregate cost saving], [27.9%],
+)
+
+@fig:algo_backtest_hist shows the distribution is roughly bell shaped around a 28% saving and never crosses zero: Smart V1 beat the naive policy on every one of the 1000 days, with the worst day still 6.8% cheaper. The backtest mean sits above the 20% measured in the lab because the simulation has no command latency and no measurement noise, both of which blunt the timing of charge and discharge decisions on the real grid. The spread reflects how much each day's price profile offers: flat days leave little for the forecast to exploit, while a deep midday trough followed by a sharp evening peak rewards it most.
 
 == Auxiliary Power Overhead <sec:9-6>
 
