@@ -740,9 +740,9 @@ The software system provides the communication, control and monitoring infrastru
 
 == Architecture <sec:8-1>
 
-The lowest tier consists of the firmware running on each Pico-controlled module. Every module hosts a lightweight HTTP server on the Pico's second core, exposing a JSON command endpoint for remote control. Keeping the networking stack on core 1 isolates it from the 1 kHz control loop running on core 0, preventing network activity from introducing jitter into the timing-critical control and safety logic. The same networking thread also pushes a snapshot of its readings to the backend once per second.
+The lowest tier consists of firmware running on each Pico-controlled module. Every module runs a lightweight HTTP server on core 1 and exposes a JSON `POST /cmd` endpoint for incoming setpoints. Keeping networking on core 1 isolates socket handling from the 1 kHz control loop on core 0, avoiding control jitter. The same thread also uploads telemetry to the backend with role-specific `POST /modules/tlm/{role}` requests (1s periodic heartbeat plus command-triggered pushes). The 1s heartbeat is chosen as a monitoring compromise: it is short enough to surface faults, voltage excursions and thermal issues before they escalate, yet slow enough to keep WiFi airtime and backend write load modest across all modules, with command-triggered pushes providing near-immediate visibility after setpoint changes.
 
-The middle tier is a Python FastAPI backend backed by a SQLite database. It stores grid snapshots, module readings and algorithm outputs, and acts as the communication bridge between the frontend and the embedded modules. A standalone poller retrieves simulation data from the Azure server and records one deduplicated snapshot per simulation tick.
+The middle tier is a Python FastAPI backend with a SQLite store. It is the only bridge between browser clients and modules: commands enter FastAPI first, then FastAPI forwards them to the addressed Pico module; telemetry arrives from modules, is timestamped and persisted, and is then served to the frontend as latest and historical snapshots. A standalone poller ingests Azure simulation data and writes one deduplicated grid snapshot per new `(day, tick)`.
 
 The top tier is a React single-page application built with Vite. The frontend provides monitoring, visualisation and operator controls through a browser interface.
 
@@ -751,62 +751,50 @@ image("images/sw_stack_architecture.png", width: 100%),
 caption: [Software stack showing module readings flowing upward to FastAPI and control commands flowing downward through the same backend.],
 ) <fig:sw-stack>
 
- The overall architecture is summarised in @fig:sw-stack. Module readings are pushed from the Pico modules to the backend, while both operator commands and EMS-generated commands are routed through the backend before being forwarded to the corresponding module.
+The overall architecture is summarised in @fig:sw-stack. Telemetry is push-based from modules to backend (`/modules/tlm/{role}`), while operator and EMS commands are backend-mediated (`/modules/cmd/{role}` to FastAPI, then forwarded to the corresponding Pico module `/cmd`).
 
+#block(breakable: false)[
 == Backend and Control Layer <sec:8-2>
 
-The backend acts as the central coordination layer for the system. In addition to storing module readings and simulation data, it hosts the Energy Management System (EMS), which evaluates the latest grid state together with module readings and generates control setpoints for the supercapacitor, load emulator and grid interfaces.
-
-A standalone poller checks the Azure simulation endpoints once per second. When a new `(day, tick)` pair is detected, the corresponding irradiance, pricing and deferrable-load information is retrieved and stored as a single grid-state snapshot. This provides a persistent historical record that can be replayed and analysed independently of the external simulation server.
-
-Multiple algorithms can be registered and selected at runtime through the dashboard, enabling direct comparison between baseline and improved control strategies without requiring firmware changes. Algorithm decisions are logged alongside module readings and grid-state snapshots, allowing the behaviour of different control policies to be reconstructed and evaluated offline.
-
-The backend also provides run-management facilities, including automatic EMS execution, CSV export of recorded data and a run-scoped profit-and-loss calculation based on imported and exported energy. Together, these features support both real-time operation and post-experiment analysis.
-
 #figure(
-image("images/sw_stack_architecture.png", width: 100%),
-caption: [EMS CONTROL FLOW],
+image("images/backend_flow.png", width: 68%),
+caption: [EMS control flow from Azure tick ingestion through FastAPI-mediated command and telemetry paths.],
 ) <fig:ems-control-flow>
 
-Azure Tick
-      ↓
-Grid State
-      ↓
-Load Latest Readings
-      ↓
-Selected Algorithm
-      ↓
-Generate Setpoints
-      ↓
-Command Dispatcher
-      ↓
-Pico Modules
+The backend is the central coordination layer. In addition to storing module telemetry and grid snapshots, it hosts the Energy Management System (EMS) loop that reads the latest committed state, runs the selected algorithm, and dispatches setpoints to LED, supercapacitor, grid and export modules via the command-proxy path.
+
+The Azure poller checks `/demand` at 1 Hz and treats `(day, tick)` as the change detector. Only when a new tick appears does it fetch `/sun`, `/price` and `/deferables`, save one grid snapshot, and notify FastAPI through an internal event endpoint. The EMS auto-loop wakes on this event (with a fallback timer), deduplicates already-applied ticks, and skips stale or tripped conditions before dispatching.
+
+Algorithms are registered and switchable at runtime from the dashboard. Decisions, telemetry snapshots and grid snapshots are logged in the same store, enabling full replay and offline comparison of baseline and improved policies.
+
+The backend also provides run-management utilities, including auto-run control, algorithm selection, CSV export and run-scoped P&L summaries for post-test analysis.
+]
 
 == Frontend Dashboard <sec:8-3>
 
 #figure(
 image("images/sw_stack_architecture.png", width: 100%),
-caption: [HOW TO PRESENT DASHBOARD?],
+caption: [Frontend role in the communication path: all reads and writes go through FastAPI rather than direct browser-to-Pico links.],
 ) <fig:dashboard>
 
 Three operator views are provided. The default *My Energy* dashboard presents a high-level overview of the microgrid, including current demand, solar irradiance, energy prices, active deferrable loads and module health indicators. Historical demand and irradiance data are displayed as charts, while a status panel highlights whether each module is online, stale, tripped, disabled or in a watchdog state.
 
 The *SMPS Overview* page focuses on system-level monitoring. Historical measurements from the PV, grid, export, supercapacitor and LED modules is visualised using time-series plots of voltages, currents and power flows. This view is intended for observing overall energy movement through the system and diagnosing interactions between subsystems.
 
-The *SMPS Modules* page provides detailed engineering controls. Each module is represented by a dedicated card showing live readings, recent history and module-specific controls. Operators can configure MPPT modes on the PV converter, adjust bus-voltage targets for grid and export modules, command supercapacitor charge or discharge currents, set LED load power levels and reset protection trips. The same interface also provides algorithm selection, automatic EMS execution controls, run-scoped profit-and-loss summaries and data export tools for post-run analysis.
+The *SMPS Modules* page provides detailed engineering controls. Each module is represented by a dedicated card showing live readings, recent history and module-specific controls. Operators can configure MPPT modes on the PV converter, adjust bus-voltage targets for grid and export modules, command supercapacitor charge or discharge currents, set LED load power levels and reset protection trips. These actions hit FastAPI endpoints, which then forward module commands to the relevant Pico. The same interface also provides algorithm selection, automatic EMS execution controls, run-scoped profit-and-loss summaries and data export tools.
 
 == Design Trade-offs <sec:8-4>
 
 Several implementation choices were revised during integration to improve timing reliability. The first version of the Azure poller attempted to fetch the full grid state at a fixed five-second interval. In practice, a complete cycle of `/demand`, `/sun`, `/price` and `/deferables` requests could take longer than the Azure update period, causing occasional missed ticks. The final design instead checks only `/demand` once per second and treats `(day, tick)` as the change detector. The remaining endpoints are fetched only when a new tick is observed, and are requested in parallel. This keeps tick-detection latency below one second while avoiding unnecessary repeated requests to the slower auxiliary endpoints.
 
-Data collection was changed for a similar reason. Early versions used backend polling to retrieve readings from each module. In practice, modules may be temporarily offline during startup, reconfiguration or network interruptions, causing polling requests to block until timeout. Achieving higher data update rates would therefore require either aggressive polling, increasing network traffic, or accepting delays caused by repeated timeout handling. The final implementation uses push-based reporting: each module sends its latest snapshot to the backend once per second whenever it is online. This makes new measurements available immediately after acquisition, avoids backend resources being tied up waiting for unresponsive modules, and scales more efficiently as the number of modules increases. The trade-off is that data collection now depends on each module maintaining its own network connection and upload loop.
+Data collection was changed for a similar reason. Early versions used backend polling of module telemetry endpoints. In practice, temporarily offline modules caused repeated timeout handling and poor scalability. The final design is push-based: each module uploads its telemetry to FastAPI, where it is persisted and served to clients. This removes backend wait-on-timeout polling overhead and scales better as module count grows. The trade-off is that data freshness now depends on each module's own uplink health.
 
 Control commands were kept backend-mediated rather than being sent directly from the frontend to the Pico modules. This allows the EMS algorithm to run headlessly on the backend and issue commands without requiring the dashboard to remain open. It also provides a single control interface for both automated EMS actions and manual operator commands. Centralising command dispatch in the backend ensures that all control actions are logged alongside module readings and grid-state data, enabling consistent run replay, debugging and post-experiment analysis. In addition, module addressing and communication logic are implemented in one location rather than being duplicated across multiple frontend views or external clients.
 
 
-== On-Module Fallback Dashboard [R WE MENTIONING THIS AS /TLM IS REMOVED] <sec:8-5>
+== On-Module Fallback Dashboard <sec:8-5>
 
-As a final redundancy, a single-file dashboard is bundled into the firmware filesystem and served by the module's own HTTP server at its root path. This gives a usable monitoring and control surface with no backend, database or Node toolchain, useful during early bench testing and as a fallback if the main stack is unavailable on demo day.
+As a final redundancy, a single-file dashboard is bundled into module firmware and served at the module root path. This provides direct local control of a single module through its on-device HTTP server during bench bring-up, even if the backend stack is unavailable. In normal operation, however, project telemetry logging, EMS automation and multi-module coordination all depend on the backend-mediated path described above.
 
 #pagebreak()
 
