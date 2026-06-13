@@ -1,111 +1,357 @@
 """
-Generates the 3-tier UI stack architecture diagram (Section 8.1).
+Generate the implemented software-stack diagram for Section 8.1.
 
-Output: images/ui_stack_architecture.png
+Output: report/images/sw_stack_architecture.png
 
-Shows the three software tiers (Pico W firmware HTTP servers, FastAPI/SQLite
-backend, React frontend) with independent telemetry and command paths. The
-telemetry path runs bottom-up through the backend; the command path goes
-directly from browser to module HTTP server on the LEFT side of the diagram,
-fully outside the backend box so the bypass is visually unambiguous.
+The normal operating path is backend-mediated:
+  - Pico modules push telemetry to FastAPI.
+  - Browser and EMS commands pass through FastAPI before reaching /cmd.
+  - The standalone Azure poller stores one grid snapshot per new (day, tick)
+    and notifies the EMS loop after the database commit.
 
-Run:
-    python scripts/generate_ui_stack.py
+Run from the repository root:
+    python report/scripts/generate_ui_stack.py
 """
 
-import os
+from pathlib import Path
+
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
-
-OUT_PATH = os.path.join(os.path.dirname(__file__), "..", "images",
-                        "ui_stack_architecture.png")
-
-# Style
-BOX_FILL = "#e8f1f9"
-BOX_EDGE = "#1f4e7a"
-TELEM_C  = "#1f77b4"
-CMD_C    = "#c0392b"
-SUB_C    = "#555555"
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 
-def box(ax, x, y, w, h, label, sub=""):
-    rect = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.05",
-                          linewidth=1.6, edgecolor=BOX_EDGE, facecolor=BOX_FILL)
-    ax.add_patch(rect)
-    ax.text(x + w / 2, y + h * 0.66, label, ha="center", va="center",
-            fontsize=11.5, fontweight="bold", color="#0d2840")
-    if sub:
-        ax.text(x + w / 2, y + h * 0.28, sub, ha="center", va="center",
-                fontsize=9, style="italic", color=SUB_C)
+OUT_PATH = (
+    Path(__file__).resolve().parent.parent / "images" / "sw_stack_architecture.png"
+)
+
+NAVY = "#173b5e"
+BOX_FILL = "#edf4fa"
+BOX_EDGE = "#28618e"
+BACKEND_FILL = "#e7f0f8"
+DB_FILL = "#f7f9fc"
+TELEMETRY = "#1677b8"
+COMMAND = "#c43d32"
+GRID_DATA = "#2e8b57"
+FALLBACK = "#7a6f8f"
+TEXT = "#102a43"
+SUBTEXT = "#4f6272"
 
 
-fig, ax = plt.subplots(figsize=(11.5, 6.4))
-ax.set_xlim(0, 11.5)
-ax.set_ylim(0, 8.2)
+def rounded_box(ax, x, y, w, h, title, subtitle="", fill=BOX_FILL, zorder=1):
+    patch = FancyBboxPatch(
+        (x, y),
+        w,
+        h,
+        boxstyle="round,pad=0.04,rounding_size=0.08",
+        linewidth=1.7,
+        edgecolor=BOX_EDGE,
+        facecolor=fill,
+        zorder=zorder,
+    )
+    ax.add_patch(patch)
+    ax.text(
+        x + w / 2,
+        y + h * 0.64,
+        title,
+        ha="center",
+        va="center",
+        fontsize=11.2,
+        fontweight="bold",
+        color=TEXT,
+        zorder=zorder + 1,
+    )
+    if subtitle:
+        ax.text(
+            x + w / 2,
+            y + h * 0.29,
+            subtitle,
+            ha="center",
+            va="center",
+            fontsize=8.6,
+            color=SUBTEXT,
+            zorder=zorder + 1,
+        )
+    return patch
+
+
+def arrow(ax, start, end, color, label="", label_xy=None, style="-|>", dashed=False):
+    patch = FancyArrowPatch(
+        start,
+        end,
+        arrowstyle=style,
+        mutation_scale=17,
+        linewidth=2.1,
+        color=color,
+        linestyle="--" if dashed else "-",
+        connectionstyle="arc3",
+        shrinkA=0,
+        shrinkB=0,
+        zorder=5,
+    )
+    ax.add_patch(patch)
+    if label:
+        x, y = label_xy or ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+        ax.text(
+            x,
+            y,
+            label,
+            ha="center",
+            va="center",
+            fontsize=8.8,
+            color=color,
+            bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5},
+            zorder=6,
+        )
+
+
+fig, ax = plt.subplots(figsize=(12.0, 7.2))
+ax.set_xlim(0, 12)
+ax.set_ylim(0, 9)
 ax.axis("off")
 
-# Boxes shifted right to leave a clear left-side lane for the command arrow.
-LEFT_LANE = 1.3  # x-coordinate of the command-path vertical run
+# External source and the three deployed tiers.
+rounded_box(
+    ax,
+    0.25,
+    4.1,
+    2.0,
+    1.15,
+    "Azure Simulation",
+    "/demand, /sun,\n/price, /deferables",
+    fill="#edf7f0",
+)
+rounded_box(
+    ax,
+    2.75,
+    7.05,
+    8.8,
+    1.25,
+    "React + Vite Browser Application",
+    "Overview and SMPS views; all normal reads and writes use FastAPI",
+)
 
-# Top: React frontend
-box(ax, 2.6, 6.1, 7.8, 1.5, "React + Vite Frontend (browser)",
-    "My Energy / SMPS Overview / SMPS Modules")
+# Backend is a tier containing the actual services used by the code.
+backend = FancyBboxPatch(
+    (2.75, 3.2),
+    8.8,
+    2.75,
+    boxstyle="round,pad=0.05,rounding_size=0.08",
+    linewidth=1.9,
+    edgecolor=BOX_EDGE,
+    facecolor=BACKEND_FILL,
+    zorder=1,
+)
+ax.add_patch(backend)
+ax.text(
+    7.15,
+    5.66,
+    "Python Backend Tier",
+    ha="center",
+    va="center",
+    fontsize=11.5,
+    fontweight="bold",
+    color=TEXT,
+)
 
-# Middle: FastAPI backend + SQLite
-box(ax, 2.6, 3.4, 7.8, 1.5, "FastAPI Backend + SQLite",
-    "1 Hz poller writes telemetry and grid signals to time-stamped tables")
+rounded_box(
+    ax,
+    3.05,
+    3.55,
+    2.35,
+    1.55,
+    "Azure Poller",
+    "1 s /demand check;\nparallel auxiliary fetch",
+    fill="#f4f8fb",
+    zorder=2,
+)
+rounded_box(
+    ax,
+    5.75,
+    3.55,
+    2.45,
+    1.55,
+    "SQLite",
+    "grid snapshots, module telemetry,\nalgorithm decisions",
+    fill=DB_FILL,
+    zorder=2,
+)
+rounded_box(
+    ax,
+    8.55,
+    3.55,
+    2.65,
+    1.55,
+    "FastAPI + EMS",
+    "REST API, command proxy,\ntick-triggered algorithm loop",
+    fill="#f4f8fb",
+    zorder=2,
+)
 
-# Bottom: per-module Pico W HTTP servers
-box(ax, 2.6, 0.4, 7.8, 1.5, "Pico W Module Firmware: HTTP Servers (one per SMPS)",
-    "Telemetry endpoint + command endpoint, on second core, isolated from 1 kHz control")
+rounded_box(
+    ax,
+    2.75,
+    0.45,
+    8.8,
+    1.55,
+    "Pico W Power-Module Firmware",
+    "PV, grid, export, supercapacitor and LED; HTTP on core 1, 1 kHz control on core 0",
+)
 
-# Telemetry path arrows (centred between the boxes, blue)
-TELEM_X = 6.5
-ax.add_patch(FancyArrowPatch((TELEM_X, 1.9), (TELEM_X, 3.4), arrowstyle="-|>",
-                             color=TELEM_C, linewidth=2.4, mutation_scale=22))
-ax.text(TELEM_X + 0.25, 2.65, "telemetry\n(1 Hz poll)", color=TELEM_C,
-        fontsize=10, va="center", ha="left")
+# Azure ingestion and internal backend data flow.
+arrow(
+    ax,
+    (2.25, 4.68),
+    (3.05, 4.68),
+    GRID_DATA,
+    "HTTP GET",
+    label_xy=(2.65, 4.95),
+)
+arrow(
+    ax,
+    (5.40, 4.48),
+    (5.75, 4.48),
+    GRID_DATA,
+    "deduplicated grid snapshot",
+    label_xy=(5.58, 4.84),
+)
+arrow(
+    ax,
+    (5.40, 3.92),
+    (5.55, 3.38),
+    GRID_DATA,
+    style="-",
+)
+arrow(
+    ax,
+    (5.55, 3.38),
+    (9.85, 3.38),
+    GRID_DATA,
+    "/internal/grid-tick after commit",
+    label_xy=(7.70, 3.39),
+    style="-",
+)
+arrow(
+    ax,
+    (9.85, 3.38),
+    (9.85, 3.55),
+    GRID_DATA,
+)
+arrow(
+    ax,
+    (8.20, 4.20),
+    (8.55, 4.20),
+    GRID_DATA,
+    "latest state",
+    label_xy=(8.38, 3.96),
+)
+arrow(
+    ax,
+    (8.55, 4.72),
+    (8.20, 4.72),
+    GRID_DATA,
+    "persist",
+    label_xy=(8.38, 4.98),
+)
 
-ax.add_patch(FancyArrowPatch((TELEM_X, 4.9), (TELEM_X, 6.1), arrowstyle="-|>",
-                             color=TELEM_C, linewidth=2.4, mutation_scale=22))
-ax.text(TELEM_X + 0.25, 5.5, "REST read", color=TELEM_C,
-        fontsize=10, va="center", ha="left")
+# Browser/backend communication: reads rise; operator commands descend.
+arrow(
+    ax,
+    (9.35, 5.95),
+    (9.35, 7.05),
+    TELEMETRY,
+    "latest/history/status/P&L",
+    label_xy=(8.00, 6.50),
+)
+arrow(
+    ax,
+    (10.35, 7.05),
+    (10.35, 5.95),
+    COMMAND,
+    "operator commands",
+    label_xy=(11.03, 6.50),
+)
 
-# Command path (red): frontend left edge -> down the LEFT LANE -> module left edge.
-# Three explicit segments, all OUTSIDE the FastAPI box, so the bypass is clear.
-FRONT_LEFT_X  = 2.6
-MODULE_LEFT_X = 2.6
-FRONT_Y       = 6.5
-MODULE_Y      = 1.2
+# Module/backend communication: pushed telemetry rises; proxied commands descend.
+arrow(
+    ax,
+    (9.35, 2.00),
+    (9.35, 3.20),
+    TELEMETRY,
+    "POST /modules/tlm/{role}\n1 s heartbeat + traced push",
+    label_xy=(7.65, 2.58),
+)
+arrow(
+    ax,
+    (10.35, 3.20),
+    (10.35, 2.00),
+    COMMAND,
+    "EMS/manual proxy\nPOST /cmd",
+    label_xy=(11.08, 2.58),
+)
 
-# Segment 1: out from frontend left edge into the lane (down-left)
-ax.add_patch(FancyArrowPatch((FRONT_LEFT_X, FRONT_Y), (LEFT_LANE, FRONT_Y),
-                             arrowstyle="-", color=CMD_C, linewidth=2.4))
-# Segment 2: vertical down the lane
-ax.add_patch(FancyArrowPatch((LEFT_LANE, FRONT_Y), (LEFT_LANE, MODULE_Y),
-                             arrowstyle="-", color=CMD_C, linewidth=2.4))
-# Segment 3: back into module left edge (terminate with arrowhead)
-ax.add_patch(FancyArrowPatch((LEFT_LANE, MODULE_Y), (MODULE_LEFT_X, MODULE_Y),
-                             arrowstyle="-|>", color=CMD_C, linewidth=2.4,
-                             mutation_scale=22))
+# Optional bench path, deliberately separate from normal coordinated operation.
+arrow(
+    ax,
+    (2.75, 7.38),
+    (2.48, 7.38),
+    FALLBACK,
+    style="-",
+    dashed=True,
+)
+arrow(
+    ax,
+    (2.48, 7.38),
+    (2.48, 1.22),
+    FALLBACK,
+    style="-",
+    dashed=True,
+)
+arrow(
+    ax,
+    (2.48, 1.22),
+    (2.75, 1.22),
+    FALLBACK,
+    style="-|>",
+    dashed=True,
+)
+ax.text(
+    2.22,
+    2.82,
+    "optional bench fallback:\nmodule-served dashboard\nuses local /tlm and /cmd",
+    ha="center",
+    va="center",
+    rotation=90,
+    fontsize=8.2,
+    color=FALLBACK,
+    bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5},
+)
 
-# Command label, vertical along the lane
-ax.text(LEFT_LANE - 0.18, 3.8, "commands\n(browser to module,\nbypasses backend)",
-        color=CMD_C, fontsize=10, va="center", ha="right",
-        rotation=90)
+# Compact legend.
+legend_y = 8.68
+for x, color, label, dashed in (
+    (3.0, TELEMETRY, "telemetry / API reads", False),
+    (5.7, COMMAND, "control commands", False),
+    (8.0, GRID_DATA, "grid data / storage", False),
+    (10.2, FALLBACK, "bench-only path", True),
+):
+    ax.plot(
+        [x, x + 0.45],
+        [legend_y, legend_y],
+        color=color,
+        linewidth=2.2,
+        linestyle="--" if dashed else "-",
+    )
+    ax.text(x + 0.55, legend_y, label, va="center", fontsize=8.5, color=color)
 
-# Legend top-right
-ax.plot([8.6, 9.2], [7.85, 7.85], color=TELEM_C, linewidth=2.6)
-ax.text(9.35, 7.85, "Telemetry path", color=TELEM_C, fontsize=10,
-        fontweight="bold", va="center")
-ax.plot([8.6, 9.2], [7.45, 7.45], color=CMD_C, linewidth=2.6)
-ax.text(9.35, 7.45, "Command path", color=CMD_C, fontsize=10,
-        fontweight="bold", va="center")
+ax.set_title(
+    "Implemented Smart-Grid Software Stack and Communication Paths",
+    fontsize=13.5,
+    fontweight="bold",
+    color=NAVY,
+    pad=12,
+)
 
-ax.set_title("User Interface Stack: independent telemetry and command paths",
-             fontsize=13, pad=12)
-
-plt.tight_layout()
-os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-plt.savefig(OUT_PATH, dpi=200, bbox_inches="tight")
-print("Saved", os.path.normpath(OUT_PATH))
+fig.tight_layout()
+OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+fig.savefig(OUT_PATH, dpi=220, bbox_inches="tight", facecolor="white")
+plt.close(fig)
+print(f"Saved {OUT_PATH}")

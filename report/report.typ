@@ -736,22 +736,22 @@ Raw $P_("panel")$ oscillation falls from about 300 mW peak-to-peak at the 1 kHz 
 // ----- 8. Software System (~1000 words) -----------------------
 = Software System <sec:8>
 
-The software system provides the communication, control and monitoring infrastructure for the smart-grid platform. It links the Azure simulation server, backend services, embedded modules and operator dashboard into a unified system.
+The software system links the Azure simulation server, backend services, embedded power modules and operator dashboard into one communication, control and monitoring platform.
 
 == Architecture <sec:8-1>
 
-The lowest tier consists of firmware running on each Pico-controlled module. Every module runs a lightweight HTTP server on core 1 and exposes a JSON `POST /cmd` endpoint for incoming setpoints. Keeping networking on core 1 isolates socket handling from the 1 kHz control loop on core 0, avoiding control jitter. The same thread also uploads telemetry to the backend with role-specific `POST /modules/tlm/{role}` requests (1s periodic heartbeat plus command-triggered pushes). The 1s heartbeat is chosen as a monitoring compromise: it is short enough to surface faults, voltage excursions and thermal issues before they escalate, yet slow enough to keep WiFi airtime and backend write load modest across all modules, with command-triggered pushes providing near-immediate visibility after setpoint changes.
+The lowest tier is the firmware for the five Pico-controlled power modules: PV, grid import, export, supercapacitor and LED load. Each runs a lightweight HTTP server on core 1 and exposes a JSON `POST /cmd` endpoint. Separating WiFi and socket handling from the 1 kHz control loop on core 0 reduces control jitter. The networking thread also uploads telemetry through role-specific `POST /modules/tlm/{role}` requests. A 1 s heartbeat bounds normal monitoring delay and limits WiFi and database load; a command-trace change triggers an additional push after the new setpoint has been applied.
 
-The middle tier is a Python FastAPI backend with a SQLite store. It is the only bridge between browser clients and modules: commands enter FastAPI first, then FastAPI forwards them to the addressed Pico module; telemetry arrives from modules, is timestamped and persisted, and is then served to the frontend as latest and historical snapshots. A standalone poller ingests Azure simulation data and writes one deduplicated grid snapshot per new `(day, tick)`.
+The middle tier is a Python FastAPI backend with a SQLite store. In normal operation it is the bridge between browser clients and modules: FastAPI forwards commands to the addressed Pico, while pushed telemetry is timestamped, persisted and served as latest or historical snapshots. A standalone poller ingests Azure data and stores at most one grid snapshot per `(day, tick)`, enforced both in code and by a database uniqueness constraint.
 
-The top tier is a React single-page application built with Vite. The frontend provides monitoring, visualisation and operator controls through a browser interface.
+The top tier is a React single-page application built with Vite for browser-based monitoring, visualisation and control.
 
 #figure(
 image("images/sw_stack_architecture.png", width: 100%),
 caption: [Software stack showing module readings flowing upward to FastAPI and control commands flowing downward through the same backend.],
 ) <fig:sw-stack>
 
-The overall architecture is summarised in @fig:sw-stack. Telemetry is push-based from modules to backend (`/modules/tlm/{role}`), while operator and EMS commands are backend-mediated (`/modules/cmd/{role}` to FastAPI, then forwarded to the corresponding Pico module `/cmd`).
+As summarised in @fig:sw-stack, telemetry is pushed to `/modules/tlm/{role}`. Operator and EMS commands use `/modules/cmd/{role}`, after which FastAPI forwards the JSON payload to the module's `/cmd`.
 
 #block(breakable: false)[
 == Backend and Control Layer <sec:8-2>
@@ -761,40 +761,59 @@ image("images/backend_flow.png", width: 68%),
 caption: [EMS control flow from Azure tick ingestion through FastAPI-mediated command and telemetry paths.],
 ) <fig:ems-control-flow>
 
-The backend is the central coordination layer. In addition to storing module telemetry and grid snapshots, it hosts the Energy Management System (EMS) loop that reads the latest committed state, runs the selected algorithm, and dispatches setpoints to LED, supercapacitor, grid and export modules via the command-proxy path.
+The backend is the central coordination layer. It stores telemetry and grid snapshots and hosts the Energy Management System (EMS) loop, which reads the latest committed state, runs the selected algorithm and dispatches setpoints to the LED, supercapacitor, grid and export modules. The PV converter operates through its own MPPT control rather than EMS dispatch.
 
-The Azure poller checks `/demand` at 1 Hz and treats `(day, tick)` as the change detector. Only when a new tick appears does it fetch `/sun`, `/price` and `/deferables`, save one grid snapshot, and notify FastAPI through an internal event endpoint. The EMS auto-loop wakes on this event (with a fallback timer), deduplicates already-applied ticks, and skips stale or tripped conditions before dispatching.
+The Azure poller nominally checks `/demand` once per second and uses `(day, tick)` as the change detector. On a new tick it fetches `/sun`, `/price` and `/deferables` in parallel, commits a snapshot, then calls `/internal/grid-tick`. The EMS loop wakes on this event, with a 5 s database fallback, and does not reapply the same tick. It skips dispatch if the grid snapshot is older than 15 s or if any of the four actuator modules reports a trip. The dashboard's online status is separate: a module is offline when its latest telemetry is more than 6 s old.
 
-Algorithms are registered and switchable at runtime from the dashboard. Decisions, telemetry snapshots and grid snapshots are logged in the same store, enabling full replay and offline comparison of baseline and improved policies.
+Algorithms are registered and switchable at runtime. Applied EMS decisions include the algorithm identifier, inputs, recommendation and per-module command results; together with grid and telemetry snapshots, these support replay and offline policy comparison. Manual dashboard commands use the same proxy but are not separately written to the decision table.
 
-The backend also provides run-management utilities, including auto-run control, algorithm selection, CSV export and run-scoped P&L summaries for post-test analysis.
+Run utilities provide auto-run start/stop, one-tick testing, algorithm selection, CSV export and run-scoped import-cost, export-revenue and net-cost summaries. Stopping auto-run sends explicit safe defaults to all four actuators.
 ]
 
 == Frontend Dashboard <sec:8-3>
 
 #figure(
-image("images/sw_stack_architecture.png", width: 100%),
-caption: [Frontend role in the communication path: all reads and writes go through FastAPI rather than direct browser-to-Pico links.],
+  grid(
+    columns: (1fr, 1fr),
+    column-gutter: 8pt,
+    row-gutter: 5pt,
+
+    grid.cell(colspan: 2)[
+      #image("images/ui_overview.png", width: 100%)
+      #align(center, text(size: 8pt)[(a) Overview: algorithm state, module health and grid trends.])
+    ],
+
+    [
+      #image("images/ui_smps_monitoring.jpeg", width: 100%)
+      #align(center, text(size: 8pt)[(b) SMPS system monitoring.])
+    ],
+
+    [
+      #image("images/ui_smps_advanced_report.jpeg", width: 100%)
+      #align(center, text(size: 8pt)[(c) Advanced algorithm/board decision view.])
+    ],
+  ),
+  caption: [Operator interface showing the high-level overview and focused SMPS monitoring and algorithm-control panels.],
 ) <fig:dashboard>
 
-Three operator views are provided. The default *My Energy* dashboard presents a high-level overview of the microgrid, including current demand, solar irradiance, energy prices, active deferrable loads and module health indicators. Historical demand and irradiance data are displayed as charts, while a status panel highlights whether each module is online, stale, tripped, disabled or in a watchdog state.
+The frontend uses a responsive card-based layout to divide system state into clear functional groups. Summary cards expose the most important values at a glance, while charts and module cards provide progressively more detail without forcing the operator to navigate away from the current workflow.
 
-The *SMPS Overview* page focuses on system-level monitoring. Historical measurements from the PV, grid, export, supercapacitor and LED modules is visualised using time-series plots of voltages, currents and power flows. This view is intended for observing overall energy movement through the system and diagnosing interactions between subsystems.
+The default *Overview* page is intended for a user who needs to understand the whole smart-grid system rather than individual converter details. It summarises demand, solar availability, energy prices, deferrable loads, active algorithm, run P&L and the health of all five power modules. Recent demand and irradiance charts show how the operating conditions evolve over time.
 
-The *SMPS Modules* page provides detailed engineering controls. Each module is represented by a dedicated card showing live readings, recent history and module-specific controls. Operators can configure MPPT modes on the PV converter, adjust bus-voltage targets for grid and export modules, command supercapacitor charge or discharge currents, set LED load power levels and reset protection trips. These actions hit FastAPI endpoints, which then forward module commands to the relevant Pico. The same interface also provides algorithm selection, automatic EMS execution controls, run-scoped profit-and-loss summaries and data export tools.
+The *SMPS* page is the engineering view of the control system. It brings the active EMS algorithm, bus-level energy flow and measurements from each Pico-controlled module into one page, allowing the interaction between the algorithm and physical converters to be observed. Its *Advanced* mode adds detailed module diagnostics, manual setpoint and protection controls, algorithm selection and EMS execution controls. This mode is therefore used for board bring-up, fault investigation and controlled manual testing, while normal system operation remains accessible through the simpler Overview and SMPS monitoring cards.
 
 == Design Trade-offs <sec:8-4>
 
-Several implementation choices were revised during integration to improve timing reliability. The first version of the Azure poller attempted to fetch the full grid state at a fixed five-second interval. In practice, a complete cycle of `/demand`, `/sun`, `/price` and `/deferables` requests could take longer than the Azure update period, causing occasional missed ticks. The final design instead checks only `/demand` once per second and treats `(day, tick)` as the change detector. The remaining endpoints are fetched only when a new tick is observed, and are requested in parallel. This keeps tick-detection latency below one second while avoiding unnecessary repeated requests to the slower auxiliary endpoints.
+The first Azure poller fetched the complete state every five seconds. Because a sequential cycle could exceed the simulator update period, ticks could be missed. The final design uses the smaller `/demand` response for nominal 1 s change detection and fetches the three slower endpoints in parallel only after a change. This reduces detection delay and unnecessary traffic, although network request time means a strict sub-second bound is not guaranteed.
 
-Data collection was changed for a similar reason. Early versions used backend polling of module telemetry endpoints. In practice, temporarily offline modules caused repeated timeout handling and poor scalability. The final design is push-based: each module uploads its telemetry to FastAPI, where it is persisted and served to clients. This removes backend wait-on-timeout polling overhead and scales better as module count grows. The trade-off is that data freshness now depends on each module's own uplink health.
+Early versions also polled each module's `/tlm` endpoint. Offline boards caused repeated timeouts and scaling cost, so the final design makes modules push telemetry. This removes backend polling waits, but freshness now depends on each board's WiFi uplink.
 
-Control commands were kept backend-mediated rather than being sent directly from the frontend to the Pico modules. This allows the EMS algorithm to run headlessly on the backend and issue commands without requiring the dashboard to remain open. It also provides a single control interface for both automated EMS actions and manual operator commands. Centralising command dispatch in the backend ensures that all control actions are logged alongside module readings and grid-state data, enabling consistent run replay, debugging and post-experiment analysis. In addition, module addressing and communication logic are implemented in one location rather than being duplicated across multiple frontend views or external clients.
+Commands remain backend-mediated so the EMS can run without an open browser and automated and manual control share one addressing and communication layer. This also avoids browser-to-Pico CORS and network-routing problems. The trade-off is that FastAPI is a control-path dependency during normal coordinated operation.
 
 
 == On-Module Fallback Dashboard <sec:8-5>
 
-As a final redundancy, a single-file dashboard is bundled into module firmware and served at the module root path. This provides direct local control of a single module through its on-device HTTP server during bench bring-up, even if the backend stack is unavailable. In normal operation, however, project telemetry logging, EMS automation and multi-module coordination all depend on the backend-mediated path described above.
+For bench bring-up, each power-module HTTP server can serve `dashboard.html` (or `index.html`) from the Pico filesystem at `/`; the repository provides the single-file dashboard in `host/dashboard.html`, which must be uploaded during deployment. It can directly read `/tlm` and write `/cmd` for local single-module control when FastAPI is unavailable. Normal telemetry logging, EMS automation and multi-module coordination still require the backend path.
 
 #pagebreak()
 
@@ -934,8 +953,8 @@ The v2 revision (@fig:smps-stand, right) added vertical slots in the side walls 
 // ---------- Smart V1 latency bar chart helper ----------
 
 #let bar-chart(data, max-val: 1000) = {
-  let chart-width = 280pt
-  let label-width = 115pt
+  let chart-width = 250pt
+  let label-width = 145pt
   let value-width = 45pt
   let bar-height = 13pt
   let gap = 8pt
@@ -976,55 +995,27 @@ The v2 revision (@fig:smps-stand, right) added vertical slots in the side walls 
 #figure(
   align(center)[
     #bar-chart((
-      ("State acquisition", 471),
-      ("Smart V1 decision", 2),
-      ("Command dispatch RTT", 307),
-      ("Pico control adoption", 4),
-      ("Data confirmation", 942),
+      ("Azure /demand HTTP", 348),
+      ("State completion + event", 471),
+      ("Smart V1 computation", 2),
+      ("Cap command HTTP RTT", 307),
+      ("Pico receive-to-apply", 4),
+      ("Command-to-confirmation", 942),
     ))
   ],
-  caption: [Median Smart V1 latency breakdown across the 20-point dataset.]
-)
-
-
-// ---------- Table: latency summary ----------
-
-#figure(
-  table(
-    columns: (1.8fr, 1fr),
-    inset: 6pt,
-    align: (left, right),
-    stroke: 0.5pt,
-    fill: (x, y) => if y == 0 { rgb("#4f6f8f") } else { none },
-
-    [*Metric*], [*Value*],
-    [Dataset size], [20 traces],
-    [Mean end-to-end latency], [1450 ms],
-    [Median end-to-end latency], [1417 ms],
-    [Minimum end-to-end latency], [597 ms],
-    [Maximum end-to-end latency], [2797 ms],
-    [95th percentile end-to-end latency], [2271 ms],
-    [Median Azure HTTP fetch latency], [348 ms],
-    [Median state acquisition latency], [471 ms],
-    [Median Smart V1 decision latency], [2.1 ms],
-    [Median command dispatch RTT], [307 ms],
-    [Median Pico control adoption latency], [4.0 ms],
-    [Median data confirmation latency], [942 ms],
-    [Median total latency including Azure fetch], [1759 ms],
-  ),
-  caption: [Summary statistics for Smart V1 end-to-end latency across the 20-point dataset.]
-)
+  caption: [Median processing and communication latency measurements across 20 confirmed Smart V1 traces.]
+) <fig:e2e-latency>
 
 
 // ---------- Report text ----------
 
-A set of latency data was captured using an autonomous script during Smart V1 operation. After removing incomplete or invalid traces, a 20-point dataset remained for analysis. Each trace was associated with a unique trace identifier, allowing the same control event to be tracked from Azure tick acquisition, through Smart V1 decision generation and command dispatch, to Pico control-loop adoption and data confirmation.
+Twenty Smart V1 traces were captured during autonomous operation. Each command carried a trace identifier returned in telemetry, linking an Azure update across state acquisition, algorithm execution, HTTP dispatch and Pico control-loop adoption. The median time from detecting a new Azure response to receiving confirming supercapacitor telemetry was 1417 ms; including the initial `/demand` request, the median path was 1759 ms.
 
-Across the 20 traces, the median end-to-end latency from backend detection of a new Azure tick to data confirmation was 1417 ms, with a mean of 1450 ms. The minimum and maximum measured end-to-end latencies were 597 ms and 2797 ms respectively, while the 95th percentile was 2271 ms. Including the initial Azure HTTP fetch stage, the median total latency was 1759 ms.
+The median measurements in @fig:e2e-latency show that computation and embedded control contributed very little delay. Smart V1 produced its decision in 2.1 ms and the Pico applied a received command in 4.0 ms. In comparison, the Azure `/demand` request required 348 ms, completing and handing over the remaining state required 471 ms, and the supercapacitor command HTTP round trip required 307 ms. The complete command path, from dispatch to confirmation in returned telemetry, took 942 ms. The dominant latency therefore came from HTTP/TCP communication, WiFi scheduling and socket servicing rather than the algorithm or the 1 kHz control loop.
 
-The latency breakdown shows that Smart V1 computation and embedded control adoption were not significant contributors to the total delay. The median Smart V1 decision time was 2.1 ms, and the Pico control loop adopted the received command in 4.0 ms. In contrast, state acquisition, command dispatch and data confirmation required median latencies of 471 ms, 307 ms and 942 ms respectively.
+The communication path was synchronised to remove avoidable waiting and preserve event ordering. `/demand` is used as the change detector, after which the slower Azure endpoints are fetched in parallel. The poller emits an internal event only after the deduplicated grid snapshot has been committed, and the EMS rejects ticks that have already been applied. Commands for the four actuators are dispatched concurrently rather than sequentially. On each Pico, the trace is timestamped when received and again when adopted by the control loop; the next 50 Hz telemetry snapshot then requests an immediate upload instead of waiting for the normal 1 s heartbeat. These measures cannot remove network delay, but they prevent polling periods and sequential requests from adding unnecessary latency.
 
-This indicates that the remaining delay in the system was dominated by communication and data handling rather than algorithm execution or low-level embedded control response. The test therefore confirms that the full Azure-to-backend-to-SMPS command path operated successfully under autonomous Smart V1 control, while also identifying the communication path as the main target for future optimisation.
+The test confirms autonomous operation across the Azure-to-backend-to-SMPS path. Further improvement should focus on persistent connections or a lighter messaging protocol, event-driven socket handling and a controlled wireless access point. The present confirmation measurement follows the supercapacitor command path; the trace method can be extended to other actuators and network conditions.
 
 == Requirements Verification <sec:11-2>
 
@@ -1036,7 +1027,7 @@ Each of the brief's six requirements @stott_ee2_brief is mapped below to the sub
   align: (center + horizon, left + horizon, left + horizon, left + horizon, left + horizon),
   [*Req*], [*Requirement*], [*Realised by*], [*Verification*], [*Status*],
   [1], [Supply domestic LEDs per web demand], [LED Load SMPS (@sec:6)], [Power-tracking test (@sec:6-3)], [Implemented; tracking within ±3% across channels],
-  [2], [Extract PV energy with MPPT], [PV SMPS (@sec:3)], [MPPT mode comparison; efficiency sweep], [Implemented; P&O shipped as default with Fixed and LUT fallbacks],
+  [2], [Extract PV energy with MPPT], [PV SMPS (@sec:3)], [MPPT mode comparison; efficiency sweep], [Implemented; Fixed is the safe boot default, with LUT and P&O selectable],
   [3], [Store excess in supercapacitor, no batteries], [Supercapacitor SMPS (@sec:4)], [Cycle test; round-trip efficiency], [Implemented],
   [4], [Import and export to grid, metered], [Import/Export SMPS (@sec:5)], [Import efficiency sweep; bus dead-band], [Implemented],
   [5], [Minimise cost; schedule storage and deferrables; beat naive], [Algorithm (@sec:9)], [Dry run versus naive baseline], [Implemented; 20% average saving vs naive],

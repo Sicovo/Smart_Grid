@@ -15,6 +15,38 @@ const THEME_STORAGE_KEY = "sg-theme";
 
 const MODULE_ROLES = ["pv", "grid", "export", "cap", "led"];
 
+function screenshotModules(modules) {
+  return Object.fromEntries(
+    MODULE_ROLES.map((role) => [
+      role,
+      {
+        ...(modules?.[role] || {}),
+        role,
+        trip: 0,
+        trip_reason: "",
+        wd: 0,
+        enable: 1,
+        wifi_connected: true,
+        backend_post_ok: true,
+      },
+    ])
+  );
+}
+
+function screenshotStatuses(statuses) {
+  return Object.fromEntries(
+    MODULE_ROLES.map((role) => [
+      role,
+      {
+        ...(statuses?.[role] || {}),
+        online: true,
+        age_s: 0.42,
+        last_seen: statuses?.[role]?.last_seen || new Date().toISOString(),
+      },
+    ])
+  );
+}
+
 function formatAlgorithmStatus(algorithm) {
   const raw = String(algorithm?.id || algorithm?.name || "naive").toLowerCase();
   return raw.includes("smart") ? "Smart" : "Naive";
@@ -33,8 +65,14 @@ function StatusDot({ status }) {
   return <span className={`module-status-dot module-status-${status}`} />;
 }
 
-function DashboardLayout({ theme, onToggleTheme, activeView = "energy" }) {
-  const [showAdvanced, setShowAdvanced] = useState(false);
+function DashboardLayout({
+  theme,
+  onToggleTheme,
+  activeView = "energy",
+  screenshotMode = false,
+  screenshotAdvanced = false,
+}) {
+  const [showAdvanced, setShowAdvanced] = useState(screenshotAdvanced);
   const [latest, setLatest] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [modules, setModules] = useState({});
@@ -87,8 +125,21 @@ function DashboardLayout({ theme, onToggleTheme, activeView = "energy" }) {
       ]);
 
       setLatest(latestData?.error ? null : latestData);
-      setActiveAlgorithm(algorithmData);
-      setAutoStatus(autoStatusData);
+      const displayedAutoStatus = screenshotMode
+        ? {
+            ...(autoStatusData || {}),
+            running: true,
+            started_at: autoStatusData?.started_at || new Date().toISOString(),
+            last_error: null,
+          }
+        : autoStatusData;
+
+      setActiveAlgorithm(
+        screenshotMode && !algorithmData
+          ? { id: "smart_v1", name: "Smart V1" }
+          : algorithmData
+      );
+      setAutoStatus(displayedAutoStatus);
       if (sourceData) setPollerSource(sourceData);
 
       if (activeView === "energy") {
@@ -99,11 +150,17 @@ function DashboardLayout({ theme, onToggleTheme, activeView = "energy" }) {
           statusesRes?.ok ? statusesRes.json() : null,
         ]);
         if (Array.isArray(snapshotsData)) setSnapshots(snapshotsData);
-        if (modulesData) setModules(modulesData);
-        if (statusesData) setModuleStatuses(statusesData);
+        if (modulesData) {
+          setModules(screenshotMode ? screenshotModules(modulesData) : modulesData);
+        }
+        if (statusesData || screenshotMode) {
+          setModuleStatuses(
+            screenshotMode ? screenshotStatuses(statusesData) : statusesData
+          );
+        }
       }
 
-      if (autoStatusData?.started_at) {
+      if (displayedAutoStatus?.started_at) {
         const runCostRes = await fetch(`${API_BASE}/algo/run/cost`, {
           cache: "no-store",
         });
@@ -116,7 +173,7 @@ function DashboardLayout({ theme, onToggleTheme, activeView = "energy" }) {
     } finally {
       fetchInFlight.current = false;
     }
-  }, [activeView]);
+  }, [activeView, screenshotMode]);
 
   async function togglePollerSource() {
     const mode = pollerSource.mode === "fixed" ? "azure" : "fixed";
@@ -302,6 +359,7 @@ function DashboardLayout({ theme, onToggleTheme, activeView = "energy" }) {
                 apiBase={API_BASE}
                 theme={theme}
                 showAdvanced={showAdvanced}
+                screenshotMode={screenshotMode}
                 activeAlgorithm={activeAlgorithm}
                 autoStatus={autoStatus}
                 runCost={runCost}
@@ -629,6 +687,9 @@ function OperationalSummary({ activeAlgorithm, autoStatus, runCost }) {
 
 function Overview() {
   const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  const screenshotMode = query.get("screenshot") === "1";
+  const screenshotAdvanced = screenshotMode && query.get("advanced") === "1";
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
     return saved === "light" ? "light" : "dark";
@@ -650,6 +711,8 @@ function Overview() {
     <DashboardLayout
       theme={theme}
       activeView={location.pathname === "/smps" ? "overview" : "energy"}
+      screenshotMode={screenshotMode}
+      screenshotAdvanced={screenshotAdvanced}
       onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
     />
   );

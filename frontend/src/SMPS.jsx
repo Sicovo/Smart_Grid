@@ -427,6 +427,7 @@ function NaiveDispatchCard({
   apiBase,
   naive,
   advanced = false,
+  screenshotMode = false,
   activeAlgorithm,
   autoStatus,
   runCost,
@@ -541,6 +542,7 @@ function NaiveDispatchCard({
             </div>
             <AlgorithmRunControls
               apiBase={apiBase}
+              screenshotMode={screenshotMode}
               applyBusy={applyBusy}
               applyMsg={applyMsg}
               canTest={!!naive}
@@ -836,6 +838,7 @@ function DayCostCard({ label, block }) {
 // ---- Run controls and current-run export ----
 function AlgorithmRunControls({
   apiBase,
+  screenshotMode = false,
   applyBusy,
   applyMsg,
   canTest,
@@ -943,7 +946,7 @@ function AlgorithmRunControls({
 
   const startedAt = summary?.run_started_at;
   const runActive = !!startedAt;
-  const running = !!status?.running;
+  const running = screenshotMode || !!status?.running;
   const fmt = (s) => (s?.count ?? 0) + " rows";
 
   return (
@@ -1148,6 +1151,7 @@ export default function SMPS({
   apiBase,
   theme = "dark",
   showAdvanced = false,
+  screenshotMode = false,
   activeAlgorithm,
   autoStatus,
   runCost,
@@ -1264,9 +1268,40 @@ export default function SMPS({
         ]);
         if (cancelled) return;
 
-        setModules(data || {});
-        if (statusesData) setStatuses(statusesData);
-        onLiveData?.(data || {}, statusesData);
+        const displayedModules = screenshotMode
+          ? Object.fromEntries(
+              ROLES.map((role) => [
+                role,
+                {
+                  ...(data?.[role] || {}),
+                  role,
+                  trip: 0,
+                  trip_reason: "",
+                  wd: 0,
+                  enable: 1,
+                  wifi_connected: true,
+                  backend_post_ok: true,
+                },
+              ])
+            )
+          : data || {};
+        const displayedStatuses = screenshotMode
+          ? Object.fromEntries(
+              ROLES.map((role) => [
+                role,
+                {
+                  ...(statusesData?.[role] || {}),
+                  online: true,
+                  age_s: 0.42,
+                  last_seen: statusesData?.[role]?.last_seen || new Date().toISOString(),
+                },
+              ])
+            )
+          : statusesData;
+
+        setModules(displayedModules);
+        if (displayedStatuses) setStatuses(displayedStatuses);
+        onLiveData?.(displayedModules, displayedStatuses);
         setNaive(naiveData && !naiveData.error ? naiveData : null);
         if (naiveData && !naiveData.error && naiveData.algo_id) {
           setActiveAlgoId(naiveData.algo_id);
@@ -1298,7 +1333,7 @@ export default function SMPS({
       cancelled = true;
       window.clearTimeout(timerId);
     };
-  }, [apiBase, onLiveData]);
+  }, [apiBase, onLiveData, screenshotMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1366,6 +1401,7 @@ export default function SMPS({
         apiBase={apiBase}
         naive={naive}
         advanced={showAdvanced}
+        screenshotMode={screenshotMode}
         activeAlgorithm={activeAlgorithm}
         autoStatus={autoStatus}
         runCost={runCost}
