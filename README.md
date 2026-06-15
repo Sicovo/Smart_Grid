@@ -1,75 +1,95 @@
-# Smart Grid Dashboard
+# Smart Grid
 
-# Requirements
+Dashboard and control software for the five-module DC smart grid.
+
+## Requirements
 
 - Python 3.10+
-- Node 22+
+- Node.js 22+
 - npm
 
 ## Setup
 
+### Linux
+
+Run setup once, then start the three services in separate terminals:
+
 ```bash
 ./setup.sh
+```
 
+```bash
 ./run_backend.sh
 ./run_poller.sh
 ./run_frontend.sh
 ```
 
-On Windows, start both frontend and backend with one command:
+### Windows
+
+Install dependencies:
 
 ```powershell
-.\run_windows.ps1
+python -m pip install -r requirements.txt
+Set-Location frontend
+npm install
+Set-Location ..
 ```
 
-To start frontend, backend, and the poller together:
+Start the backend, poller and frontend:
 
 ```powershell
 .\run_windows_all.ps1
+```
 
+Use `.\run_windows.ps1` to start only the backend and frontend.
 
+## Addresses
+
+| Service | Address |
+| --- | --- |
+| Frontend | `http://localhost:5173` |
+| Backend | `http://localhost:8000` |
+| Pico command server | `http://<pico-ip>:80/cmd` |
+
+Both the frontend and backend listen on the PC's LAN address. Other devices on
+the same network can open `http://<pc-ip>:5173`.
+
+## Pico Network
+
+The default firmware configuration uses:
+
+| Module | IP address |
+| --- | --- |
+| Supercapacitor | `192.168.137.21` |
+| Export | `192.168.137.22` |
+| Grid import | `192.168.137.23` |
+| PV | `192.168.137.24` |
+| LED load | `192.168.137.25` |
+
+Each Pico listens for commands on port `80`. Telemetry is pushed by the Pico to
+the backend on port `8000`:
+
+```text
+POST http://192.168.137.1:8000/modules/tlm/<role>
+```
+
+Valid telemetry roles are `pv`, `grid`, `export`, `cap` and `led`. The poller
+only collects grid simulation data; it does not poll Pico `/tlm` endpoints.
+
+To create the Windows hotspot, run PowerShell as administrator:
+
+```powershell
 netsh wlan set hostednetwork mode=disallow
 net stop WlanSvc
 net start WlanSvc
 netsh wlan set hostednetwork mode=allow ssid=PICO_AP key=12345688
 netsh wlan start hostednetwork
-
 ```
 
-## Module telemetry ingestion
-
-The poller now collects grid demand data from the external simulation source and can also poll individual Pico firmware boards for telemetry.
-
-Set board URLs with environment variables before running `backend/poller.py`:
-
-```bash
-PICO_PV_URL=http://192.168.4.2:80 \
-PICO_GRID_URL=http://192.168.4.3:80 \
-PICO_EXPORT_URL=http://192.168.4.4:80 \
-PICO_CAP_URL=http://192.168.4.5:80 \
-PICO_LED_URL=http://192.168.4.6:80 \
-python backend/poller.py
-```
-
-The poller fetches `/tlm` from each configured board and stores the telemetry in the `module_snapshots` table via `save_module_snapshot()`.
-
-Board telemetry can also still be sent manually to the backend via `/smps/ingest`.
-
-## Access Over Wi-Fi
-
-The frontend dev server listens on your computer's LAN address, and the frontend calls the backend on the same host by default.
-
-1. Start the backend and frontend from this repo.
-2. Find your computer's Wi-Fi IPv4 address.
-3. Open `http://<your-ip>:5173` from another device on the same network.
-
-Example:
-
-```text
-http://192.168.1.42:5173
-```
-
-If your backend runs on a different machine or port, set `VITE_API_BASE_URL` before starting the frontend.
+If the network addresses change, update each module's `wifi_config.py`, the
+`BACKEND_PUSH_HOST` in its `common.py`, and the backend `PICO_<ROLE>_URL`
+environment variables.
+end.
 
 ```bash
 VITE_API_BASE_URL=http://192.168.1.50:8000 npm run dev
