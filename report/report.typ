@@ -112,6 +112,8 @@
   #text(size: 13pt)[Imperial College London]
   #v(0.15cm)
   #text(size: 13pt)[June 2026]
+  #v(0.25cm)
+  #text(size: 13pt)[GitHub: #link("https://github.com/Sicovo/Smart_Grid")[Sicovo/Smart_Grid]]
 ]
 
 #v(1cm)
